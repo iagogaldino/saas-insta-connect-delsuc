@@ -133,6 +133,7 @@ async function buildSessionsResponse(userId: string, state: UserSessionState) {
       return {
         id,
         isActive: id === state.activeSessionId,
+        isRuntimeOn: instaRuntimes.has(id),
         instagramUsername: profile?.instagramUsername ?? null,
         instagramFullName: profile?.instagramFullName ?? null,
         instagramProfilePicUrl: profile?.instagramProfilePicUrl ?? null,
@@ -435,6 +436,36 @@ app.patch("/insta/sessions/active", async (req, res) => {
       res.status(409).json({ ok: false, error: "Sessão sem Instagram conectado. Conecte antes de usar." });
       return;
     }
+    const message = e instanceof Error ? e.message : String(e);
+    res.status(500).json({ ok: false, error: message });
+  }
+});
+
+app.post("/insta/sessions/:sessionId/runtime/start", async (req, res) => {
+  try {
+    const userId = req.authUser?.id;
+    if (!userId) {
+      res.status(401).json({ ok: false, error: "Unauthorized." });
+      return;
+    }
+
+    const sessionId = typeof req.params.sessionId === "string" ? req.params.sessionId.trim() : "";
+    if (!sessionId) {
+      res.status(400).json({ ok: false, error: "sessionId é obrigatório." });
+      return;
+    }
+
+    const state = await getOrCreateUserSessionState(userId);
+    if (!state.sessionIds.includes(sessionId)) {
+      res.status(404).json({ ok: false, error: "Sessão não encontrada para este usuário." });
+      return;
+    }
+
+    const runtime = getOrCreateInstaRuntimeBySessionId(sessionId);
+    await runtime.client.launch();
+
+    res.json(await buildSessionsResponse(userId, state));
+  } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
     res.status(500).json({ ok: false, error: message });
   }

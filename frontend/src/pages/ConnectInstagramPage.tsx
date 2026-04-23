@@ -11,6 +11,7 @@ export function ConnectInstagramPage() {
     activeSessionId,
     createSession,
     setActiveSession,
+    startSessionRuntime,
     removeSession,
     connectInstagramToSession,
     submitSecurityCodeForSession,
@@ -210,6 +211,14 @@ export function ConnectInstagramPage() {
     setSecurityCode("")
   }
 
+  async function handleStartSessionRuntime(sessionId: string) {
+    setError(null)
+    const result = await startSessionRuntime(sessionId)
+    if (!result.success) {
+      setError(result.error)
+    }
+  }
+
   async function handleOpenSessionFeatures(
     sessionId: string,
     isActive: boolean,
@@ -318,9 +327,25 @@ export function ConnectInstagramPage() {
                   <p className="text-xs text-slate-500">
                     {session.isActive ? "Sessão ativa" : "Sessão disponível"}
                   </p>
+                  <p className={`text-xs ${session.isRuntimeOn ? "text-emerald-700" : "text-slate-500"}`}>
+                    Instância: {session.isRuntimeOn ? "ligada" : "desligada"}
+                  </p>
                 </div>
                 {!session.isActive ? (
                   <div className="flex items-center gap-2">
+                    {!session.isRuntimeOn ? (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          void handleStartSessionRuntime(session.id)
+                        }}
+                        disabled={isManagingSessions}
+                        className="rounded-lg border border-emerald-300 bg-white px-2.5 py-1 text-xs text-emerald-700 hover:bg-emerald-50 disabled:cursor-not-allowed disabled:opacity-70"
+                      >
+                        Ligar instância
+                      </button>
+                    ) : null}
                     <button
                       type="button"
                       onClick={(e) => {
@@ -346,6 +371,19 @@ export function ConnectInstagramPage() {
                   </div>
                 ) : (
                   <div className="flex items-center gap-2">
+                    {!session.isRuntimeOn ? (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          void handleStartSessionRuntime(session.id)
+                        }}
+                        disabled={isManagingSessions}
+                        className="rounded-lg border border-emerald-300 bg-white px-2.5 py-1 text-xs text-emerald-700 hover:bg-emerald-50 disabled:cursor-not-allowed disabled:opacity-70"
+                      >
+                        Ligar instância
+                      </button>
+                    ) : null}
                     <span className="rounded bg-emerald-100 px-2 py-1 text-xs text-emerald-700">Ativa</span>
                     <button
                       type="button"

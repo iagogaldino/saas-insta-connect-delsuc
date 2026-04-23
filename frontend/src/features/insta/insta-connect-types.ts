@@ -14,6 +14,7 @@ export type InstaLinkResult =
 export type InstaSessionItem = {
   id: string
   isActive: boolean
+  isRuntimeOn?: boolean
   instagramUsername: string | null
   instagramFullName: string | null
   instagramProfilePicUrl: string | null

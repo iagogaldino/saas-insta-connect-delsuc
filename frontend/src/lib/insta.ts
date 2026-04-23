@@ -39,6 +39,7 @@ export async function postInstaSubmitSecurityCodeForSession(
 export type InstaSessionItem = {
   id: string
   isActive: boolean
+  isRuntimeOn?: boolean
   instagramUsername: string | null
   instagramFullName: string | null
   instagramProfilePicUrl: string | null
@@ -64,6 +65,10 @@ export async function patchInstaActiveSession(sessionId: string) {
 
 export async function deleteInstaSession(sessionId: string) {
   return api.delete<InstaSessionsResponse>(`/insta/sessions/${encodeURIComponent(sessionId)}`)
+}
+
+export async function postStartInstaSessionRuntime(sessionId: string) {
+  return api.post<InstaSessionsResponse>(`/insta/sessions/${encodeURIComponent(sessionId)}/runtime/start`)
 }
 
 export type AutoFollowPrivacyFilter = "any" | "public" | "private"

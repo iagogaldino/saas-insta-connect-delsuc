@@ -8,6 +8,7 @@ import {
   postCreateInstaSession,
   postInstaLogin,
   postInstaLoginForSession,
+  postStartInstaSessionRuntime,
   postInstaSubmitSecurityCodeForSession,
 } from "../../lib/insta"
 import { InstaConnectContext, type InstaConnectValue } from "./insta-connect-context"
@@ -79,6 +80,24 @@ export function InstaConnectProvider({ children }: { children: ReactNode }) {
       // Ao trocar a sessão ativa, exige novo vínculo de login IG para essa sessão.
       writeInstaLinked(false)
       setIsLinked(false)
+      return { success: true, sessions: data.sessions, activeSessionId: data.activeSessionId }
+    } catch (e) {
+      if (axios.isAxiosError(e)) {
+        const body = e.response?.data as { error?: string } | undefined
+        return { success: false, error: body?.error ?? e.message }
+      }
+      return { success: false, error: e instanceof Error ? e.message : "Erro desconhecido." }
+    } finally {
+      setIsManagingSessions(false)
+    }
+  }, [])
+
+  const startSessionRuntime = useCallback(async (sessionId: string): Promise<InstaSessionsResult> => {
+    setIsManagingSessions(true)
+    try {
+      const { data } = await postStartInstaSessionRuntime(sessionId)
+      setSessions(data.sessions)
+      setActiveSessionId(data.activeSessionId)
       return { success: true, sessions: data.sessions, activeSessionId: data.activeSessionId }
     } catch (e) {
       if (axios.isAxiosError(e)) {
@@ -289,6 +308,7 @@ export function InstaConnectProvider({ children }: { children: ReactNode }) {
       refreshSessions,
       createSession,
       setActiveSession,
+      startSessionRuntime,
       removeSession,
       connectInstagram,
       connectInstagramToSession,
@@ -303,6 +323,7 @@ export function InstaConnectProvider({ children }: { children: ReactNode }) {
       refreshSessions,
       createSession,
       setActiveSession,
+      startSessionRuntime,
       removeSession,
       connectInstagram,
       connectInstagramToSession,

@@ -8,9 +8,18 @@ import {
   postCreateInstaSession,
   postInstaLogin,
   postInstaLoginForSession,
+  postInstaSubmitSecurityCodeForSession,
 } from "../../lib/insta"
 import { InstaConnectContext, type InstaConnectValue } from "./insta-connect-context"
 import type { InstaLinkResult, InstaSessionsResult } from "./insta-connect-types"
+
+type ChallengeLikeErrorBody = {
+  error?: string
+  challengeRequired?: boolean
+  challengeType?: "security_code" | "two_factor" | "unknown"
+  message?: string
+  url?: string
+}
 
 export function InstaConnectProvider({ children }: { children: ReactNode }) {
   const [isLinked, setIsLinked] = useState(() => readInstaLinked())
@@ -111,6 +120,17 @@ export function InstaConnectProvider({ children }: { children: ReactNode }) {
       }
       try {
         const { data } = await postInstaLogin(u, password)
+        if (data.ok && data.challengeRequired) {
+          return {
+            success: false,
+            challengeRequired: true,
+            challengeType: data.challengeType,
+            message: data.message,
+            url: data.url,
+            sessionId: "",
+            username: u,
+          }
+        }
         if (data.ok && data.success) {
           writeInstaLinked(true)
           setIsLinked(true)
@@ -127,7 +147,18 @@ export function InstaConnectProvider({ children }: { children: ReactNode }) {
         return { success: false, error: "Resposta inesperada do servidor." }
       } catch (e) {
         if (axios.isAxiosError(e)) {
-          const body = e.response?.data as { error?: string } | undefined
+          const body = e.response?.data as ChallengeLikeErrorBody | undefined
+          if (body?.challengeRequired && typeof body.url === "string" && body.url.trim()) {
+            return {
+              success: false,
+              challengeRequired: true,
+              challengeType: body.challengeType,
+              message: body.message,
+              url: body.url,
+              sessionId: "",
+              username: u,
+            }
+          }
           return { success: false, error: body?.error ?? e.message }
         }
         return { success: false, error: e instanceof Error ? e.message : "Erro desconhecido." }
@@ -144,6 +175,17 @@ export function InstaConnectProvider({ children }: { children: ReactNode }) {
       }
       try {
         const { data } = await postInstaLoginForSession(sessionId, u, password)
+        if (data.ok && data.challengeRequired) {
+          return {
+            success: false,
+            challengeRequired: true,
+            challengeType: data.challengeType,
+            message: data.message,
+            url: data.url,
+            sessionId,
+            username: u,
+          }
+        }
         if (data.ok && data.success) {
           writeInstaLinked(true)
           setIsLinked(true)
@@ -156,6 +198,65 @@ export function InstaConnectProvider({ children }: { children: ReactNode }) {
             error:
               "O Instagram não confirmou o login. Verifique as credenciais, 2FA ou use o backend com janela visível. URL: " +
               (data.url.length > 120 ? data.url.slice(0, 120) + "…" : data.url),
+          }
+        }
+        return { success: false, error: "Resposta inesperada do servidor." }
+      } catch (e) {
+        if (axios.isAxiosError(e)) {
+          const body = e.response?.data as ChallengeLikeErrorBody | undefined
+          if (body?.challengeRequired && typeof body.url === "string" && body.url.trim()) {
+            return {
+              success: false,
+              challengeRequired: true,
+              challengeType: body.challengeType,
+              message: body.message,
+              url: body.url,
+              sessionId,
+              username: u,
+            }
+          }
+          return { success: false, error: body?.error ?? e.message }
+        }
+        return { success: false, error: e instanceof Error ? e.message : "Erro desconhecido." }
+      }
+    },
+    [refreshSessions],
+  )
+
+  const submitSecurityCodeForSession = useCallback(
+    async (sessionId: string, username: string, code: string): Promise<InstaLinkResult> => {
+      const normalizedCode = code.trim()
+      const normalizedUsername = username.trim().toLowerCase()
+      if (!sessionId || !normalizedCode || !normalizedUsername) {
+        return { success: false, error: "Preencha sessão, usuário e código de segurança." }
+      }
+      try {
+        const { data } = await postInstaSubmitSecurityCodeForSession(
+          sessionId,
+          normalizedCode,
+          normalizedUsername,
+        )
+        if (data.ok && data.challengeRequired) {
+          return {
+            success: false,
+            challengeRequired: true,
+            challengeType: data.challengeType,
+            message: data.message,
+            url: data.url,
+            sessionId,
+            username: normalizedUsername,
+          }
+        }
+        if (data.ok && data.success) {
+          writeInstaLinked(true)
+          setIsLinked(true)
+          await refreshSessions()
+          return { success: true, url: data.url }
+        }
+        if (data.ok && !data.success) {
+          return {
+            success: false,
+            error: data.message ?? "Instagram não confirmou o código de segurança.",
           }
         }
         return { success: false, error: "Resposta inesperada do servidor." }
@@ -191,6 +292,7 @@ export function InstaConnectProvider({ children }: { children: ReactNode }) {
       removeSession,
       connectInstagram,
       connectInstagramToSession,
+      submitSecurityCodeForSession,
       disconnectInstagram,
     }),
     [
@@ -204,6 +306,7 @@ export function InstaConnectProvider({ children }: { children: ReactNode }) {
       removeSession,
       connectInstagram,
       connectInstagramToSession,
+      submitSecurityCodeForSession,
       disconnectInstagram,
     ],
   )

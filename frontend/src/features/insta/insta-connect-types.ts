@@ -1,5 +1,14 @@
 export type InstaLinkResult =
   | { success: true; url: string }
+  | {
+      success: false
+      challengeRequired: true
+      challengeType?: "security_code" | "two_factor" | "unknown"
+      message?: string
+      url: string
+      sessionId: string
+      username: string
+    }
   | { success: false; error: string }
 
 export type InstaSessionItem = {

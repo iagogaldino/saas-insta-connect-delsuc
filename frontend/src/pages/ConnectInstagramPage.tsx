@@ -13,6 +13,7 @@ export function ConnectInstagramPage() {
     setActiveSession,
     removeSession,
     connectInstagramToSession,
+    submitSecurityCodeForSession,
   } = useInstaConnect()
   const [username, setUsername] = useState("")
   const [password, setPassword] = useState("")
@@ -20,8 +21,11 @@ export function ConnectInstagramPage() {
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [isCreatingSession, setIsCreatingSession] = useState(false)
   const [showConnectForm, setShowConnectForm] = useState(false)
+  const [showTwoFactorForm, setShowTwoFactorForm] = useState(false)
   const [pendingSessionId, setPendingSessionId] = useState<string | null>(null)
+  const [pendingTwoFactorUsername, setPendingTwoFactorUsername] = useState<string>("")
   const [previousActiveSessionId, setPreviousActiveSessionId] = useState<string | null>(null)
+  const [securityCode, setSecurityCode] = useState("")
 
   async function handleSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault()
@@ -34,27 +38,105 @@ export function ConnectInstagramPage() {
     const result = await connectInstagramToSession(pendingSessionId, username, password)
     if (result.success) {
       setPassword("")
+      setSecurityCode("")
       setShowConnectForm(false)
+      setShowTwoFactorForm(false)
       setPendingSessionId(null)
+      setPendingTwoFactorUsername("")
       setPreviousActiveSessionId(null)
+      setIsSubmitting(false)
+    } else if ("challengeRequired" in result && result.challengeRequired) {
+      setShowConnectForm(false)
+      setShowTwoFactorForm(true)
+      setPendingTwoFactorUsername(result.username)
+      setSecurityCode("")
+      setError(
+        result.message ??
+          "Instagram pediu código de segurança. Digite o código recebido para concluir a conexão.",
+      )
+      setPassword("")
       setIsSubmitting(false)
     } else {
       const removeResult = await removeSession(pendingSessionId)
+      const loginError = "error" in result ? result.error : "Falha ao iniciar challenge 2FA."
       if (!removeResult.success) {
-        setError(`${result.error} Também falhou ao remover sessão provisória: ${removeResult.error}`)
+        setError(`${loginError} Também falhou ao remover sessão provisória: ${removeResult.error}`)
       } else if (previousActiveSessionId && previousActiveSessionId !== pendingSessionId) {
         await setActiveSession(previousActiveSessionId)
-        setError(result.error)
+        setError(loginError)
       } else {
-        setError(result.error)
+        setError(loginError)
       }
       setShowConnectForm(false)
+      setShowTwoFactorForm(false)
       setPendingSessionId(null)
+      setPendingTwoFactorUsername("")
       setPreviousActiveSessionId(null)
       setUsername("")
       setPassword("")
+      setSecurityCode("")
       setIsSubmitting(false)
     }
+  }
+
+  async function handleSubmitTwoFactorCode(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault()
+    setError(null)
+    if (!pendingSessionId || !pendingTwoFactorUsername) {
+      setError("Sessão pendente de 2FA não encontrada. Inicie o login novamente.")
+      return
+    }
+    setIsSubmitting(true)
+    const result = await submitSecurityCodeForSession(
+      pendingSessionId,
+      pendingTwoFactorUsername,
+      securityCode,
+    )
+    if (result.success) {
+      setShowTwoFactorForm(false)
+      setShowConnectForm(false)
+      setPendingSessionId(null)
+      setPendingTwoFactorUsername("")
+      setPreviousActiveSessionId(null)
+      setSecurityCode("")
+      setPassword("")
+      setIsSubmitting(false)
+      return
+    }
+    if ("challengeRequired" in result && result.challengeRequired) {
+      setError(result.message ?? "Código inválido ou challenge ainda pendente. Tente novamente.")
+      setSecurityCode("")
+      setIsSubmitting(false)
+      return
+    }
+    setError("error" in result ? result.error : "Falha ao validar código de segurança.")
+    setSecurityCode("")
+    setIsSubmitting(false)
+  }
+
+  async function handleCancelTwoFactorFlow() {
+    if (!pendingSessionId) {
+      setShowTwoFactorForm(false)
+      setPendingTwoFactorUsername("")
+      return
+    }
+    const removeResult = await removeSession(pendingSessionId)
+    if (!removeResult.success) {
+      setError(`Falhou ao cancelar 2FA e remover sessão provisória: ${removeResult.error}`)
+      return
+    }
+    if (previousActiveSessionId && previousActiveSessionId !== pendingSessionId) {
+      await setActiveSession(previousActiveSessionId)
+    }
+    setShowTwoFactorForm(false)
+    setShowConnectForm(false)
+    setPendingSessionId(null)
+    setPendingTwoFactorUsername("")
+    setPreviousActiveSessionId(null)
+    setUsername("")
+    setPassword("")
+    setSecurityCode("")
+    setError(null)
   }
 
   async function handleCreateSession() {
@@ -75,9 +157,12 @@ export function ConnectInstagramPage() {
     setPreviousActiveSessionId(previousActive)
     setPendingSessionId(newestSession.id)
     setShowConnectForm(true)
+    setShowTwoFactorForm(false)
+    setPendingTwoFactorUsername("")
     setError(null)
     setUsername("")
     setPassword("")
+    setSecurityCode("")
   }
 
   async function handleSetActiveSession(sessionId: string, hasConnectedInstagram: boolean) {
@@ -86,8 +171,11 @@ export function ConnectInstagramPage() {
       setPreviousActiveSessionId(activeSessionId)
       setPendingSessionId(sessionId)
       setShowConnectForm(true)
+      setShowTwoFactorForm(false)
+      setPendingTwoFactorUsername("")
       setUsername("")
       setPassword("")
+      setSecurityCode("")
       return
     }
     const result = await setActiveSession(sessionId)
@@ -98,6 +186,9 @@ export function ConnectInstagramPage() {
     setPendingSessionId(null)
     setPreviousActiveSessionId(null)
     setShowConnectForm(false)
+    setShowTwoFactorForm(false)
+    setPendingTwoFactorUsername("")
+    setSecurityCode("")
   }
 
   async function handleRemoveSession(sessionId: string) {
@@ -112,8 +203,11 @@ export function ConnectInstagramPage() {
     setPendingSessionId(null)
     setPreviousActiveSessionId(null)
     setShowConnectForm(false)
+    setShowTwoFactorForm(false)
+    setPendingTwoFactorUsername("")
     setUsername("")
     setPassword("")
+    setSecurityCode("")
   }
 
   async function handleOpenSessionFeatures(
@@ -127,8 +221,11 @@ export function ConnectInstagramPage() {
         setPreviousActiveSessionId(activeSessionId)
         setPendingSessionId(sessionId)
         setShowConnectForm(true)
+        setShowTwoFactorForm(false)
+        setPendingTwoFactorUsername("")
         setUsername("")
         setPassword("")
+        setSecurityCode("")
         return
       }
       const result = await setActiveSession(sessionId)
@@ -139,6 +236,9 @@ export function ConnectInstagramPage() {
       setPendingSessionId(null)
       setPreviousActiveSessionId(null)
       setShowConnectForm(false)
+      setShowTwoFactorForm(false)
+      setPendingTwoFactorUsername("")
+      setSecurityCode("")
     }
     void navigate("/instagram/session-active")
   }
@@ -321,6 +421,62 @@ export function ConnectInstagramPage() {
           <p className="text-xs text-slate-400">
             Pode levar ~1 min. 2FA e verificações exigem o backend com Chrome visível (sem
             INSTA_HEADLESS).
+          </p>
+        </form>
+      ) : null}
+
+      {showTwoFactorForm ? (
+        <form
+          onSubmit={handleSubmitTwoFactorCode}
+          className="space-y-4 rounded-xl border border-slate-200 bg-white p-6 shadow-sm"
+        >
+          <div className="flex items-center gap-2 text-slate-800">
+            <AtSign className="h-5 w-5" aria-hidden />
+            <span className="text-sm font-medium">Confirmar código de segurança (2FA)</span>
+          </div>
+          <div>
+            <label htmlFor="ig-security-code" className="mb-1 block text-sm font-medium text-slate-700">
+              Código recebido
+            </label>
+            <input
+              id="ig-security-code"
+              type="text"
+              name="security-code"
+              autoComplete="one-time-code"
+              inputMode="numeric"
+              className="w-full rounded-lg border border-slate-200 px-3 py-2 text-slate-900 shadow-sm focus:border-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-300"
+              value={securityCode}
+              onChange={(e) => setSecurityCode(e.target.value)}
+              disabled={isSubmitting}
+            />
+          </div>
+          {error ? <p className="text-sm text-red-600">{error}</p> : null}
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="submit"
+              disabled={isSubmitting}
+              className="inline-flex items-center justify-center gap-2 rounded-lg bg-slate-900 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-70"
+            >
+              {isSubmitting ? (
+                <Loader2 className="h-4 w-4 shrink-0 animate-spin" aria-hidden />
+              ) : (
+                <LogIn className="h-4 w-4" aria-hidden />
+              )}
+              {isSubmitting ? "Validando código…" : "Confirmar código"}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                void handleCancelTwoFactorFlow()
+              }}
+              disabled={isSubmitting}
+              className="inline-flex items-center justify-center rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-70"
+            >
+              Cancelar
+            </button>
+          </div>
+          <p className="text-xs text-slate-400">
+            Se o Instagram solicitar novo código, você pode tentar novamente sem reiniciar a sessão.
           </p>
         </form>
       ) : null}

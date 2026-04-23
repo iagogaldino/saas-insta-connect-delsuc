@@ -12,6 +12,7 @@ export type InstaConnectValue = {
   removeSession: (sessionId: string) => Promise<InstaSessionsResult>
   connectInstagram: (username: string, password: string) => Promise<InstaLinkResult>
   connectInstagramToSession: (sessionId: string, username: string, password: string) => Promise<InstaLinkResult>
+  submitSecurityCodeForSession: (sessionId: string, username: string, code: string) => Promise<InstaLinkResult>
   disconnectInstagram: () => void
 }
 

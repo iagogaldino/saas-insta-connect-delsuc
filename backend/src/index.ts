@@ -50,6 +50,30 @@ type InstagramPublicProfile = {
   profilePicUrl: string | null;
 };
 
+function logInstaAuth(event: string, meta?: Record<string, unknown>): void {
+  const payload = meta ? ` ${JSON.stringify(meta)}` : "";
+  console.log(`[${new Date().toISOString()}] [insta-auth] ${event}${payload}`);
+}
+
+function resolveChallengeFromLoginResult(result: { url?: string; challengeRequired?: boolean; challengeType?: unknown }) {
+  const explicitChallenge = result.challengeRequired === true;
+  const url = String(result.url || "");
+  const urlSuggestsChallenge =
+    url.includes("/accounts/login/two_factor") ||
+    url.includes("/accounts/two_factor") ||
+    url.includes("/challenge/");
+  const challengeRequired = explicitChallenge || urlSuggestsChallenge;
+  const challengeType =
+    typeof result.challengeType === "string" && result.challengeType
+      ? result.challengeType
+      : url.includes("two_factor")
+        ? "two_factor"
+        : url.includes("/challenge/")
+          ? "security_code"
+          : "unknown";
+  return { challengeRequired, challengeType };
+}
+
 function uniqueSessionIds(items: Array<string | null | undefined>): string[] {
   return [...new Set(items.filter((item): item is string => typeof item === "string" && item.trim().length > 0))];
 }
@@ -419,27 +443,65 @@ app.patch("/insta/sessions/active", async (req, res) => {
 app.post("/insta/sessions/:sessionId/connect-login", async (req, res) => {
   try {
     const userId = req.authUser?.id;
-    if (!userId) {
-      res.status(401).json({ ok: false, error: "Unauthorized." });
-      return;
-    }
-
     const sessionId = typeof req.params.sessionId === "string" ? req.params.sessionId.trim() : "";
     const username = typeof req.body?.username === "string" ? req.body.username.trim() : "";
     const password = typeof req.body?.password === "string" ? req.body.password : "";
+    logInstaAuth("connect-login:start", {
+      userId,
+      sessionId,
+      username,
+      passwordProvided: Boolean(password),
+      passwordLength: password.length,
+    });
+
+    if (!userId) {
+      logInstaAuth("connect-login:unauthorized", { sessionId, username });
+      res.status(401).json({ ok: false, error: "Unauthorized." });
+      return;
+    }
     if (!sessionId || !username || !password) {
+      logInstaAuth("connect-login:bad-request", {
+        userId,
+        sessionId,
+        username,
+        hasPassword: Boolean(password),
+      });
       res.status(400).json({ ok: false, error: "sessionId, username e password são obrigatórios." });
       return;
     }
 
     const state = await getOrCreateUserSessionState(userId);
     if (!state.sessionIds.includes(sessionId)) {
+      logInstaAuth("connect-login:session-not-found", { userId, sessionId, username });
       res.status(404).json({ ok: false, error: "Sessão não encontrada para este usuário." });
       return;
     }
 
     const runtime = getOrCreateInstaRuntimeBySessionId(sessionId);
     const result = await runtime.client.login(username, password);
+    const challengeInfo = resolveChallengeFromLoginResult(result as any);
+    const challengeRequired = challengeInfo.challengeRequired;
+    logInstaAuth("connect-login:result", {
+      userId,
+      sessionId,
+      username,
+      success: result.success,
+      challengeRequired,
+      challengeType: challengeInfo.challengeType,
+      url: result.url,
+      message: (result as any)?.message,
+    });
+    if (challengeRequired) {
+      res.json({
+        ok: true,
+        headless,
+        ...result,
+        challengeRequired: true,
+        challengeType: challengeInfo.challengeType,
+        activeSessionId: sessionId,
+      });
+      return;
+    }
     if (!result.success) {
       res.status(409).json({ ok: false, error: "Instagram não confirmou o login para esta sessão.", ...result });
       return;
@@ -460,9 +522,97 @@ app.post("/insta/sessions/:sessionId/connect-login", async (req, res) => {
     );
 
     await setActiveUserSession(userId, sessionId);
+    logInstaAuth("connect-login:completed", { userId, sessionId, username });
     res.json({ ok: true, headless, ...result, activeSessionId: sessionId });
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
+    logInstaAuth("connect-login:error", { error: message });
+    res.status(500).json({ ok: false, error: message });
+  }
+});
+
+app.post("/insta/sessions/:sessionId/submit-security-code", async (req, res) => {
+  try {
+    const userId = req.authUser?.id;
+    const sessionId = typeof req.params.sessionId === "string" ? req.params.sessionId.trim() : "";
+    const code = typeof req.body?.code === "string" ? req.body.code.trim() : "";
+    const username = typeof req.body?.username === "string" ? req.body.username.trim().toLowerCase() : "";
+    logInstaAuth("submit-security-code:start", {
+      userId,
+      sessionId,
+      username,
+      codeProvided: Boolean(code),
+      codeLength: code.length,
+    });
+
+    if (!userId) {
+      logInstaAuth("submit-security-code:unauthorized", { sessionId, username });
+      res.status(401).json({ ok: false, error: "Unauthorized." });
+      return;
+    }
+    if (!sessionId || !code || !username) {
+      logInstaAuth("submit-security-code:bad-request", {
+        userId,
+        sessionId,
+        username,
+        hasCode: Boolean(code),
+      });
+      res.status(400).json({ ok: false, error: "sessionId, code e username são obrigatórios." });
+      return;
+    }
+
+    const state = await getOrCreateUserSessionState(userId);
+    if (!state.sessionIds.includes(sessionId)) {
+      logInstaAuth("submit-security-code:session-not-found", { userId, sessionId, username });
+      res.status(404).json({ ok: false, error: "Sessão não encontrada para este usuário." });
+      return;
+    }
+
+    const runtime = getOrCreateInstaRuntimeBySessionId(sessionId);
+    const submitSecurityCode = (runtime.client as any)?.submitSecurityCode;
+    if (typeof submitSecurityCode !== "function") {
+      logInstaAuth("submit-security-code:not-supported", { userId, sessionId, username });
+      res.status(409).json({
+        ok: false,
+        error:
+          "A versão atual da biblioteca insta-connect-delsuc não suporta submitSecurityCode. Atualize a lib para uma versão com suporte a 2FA.",
+      });
+      return;
+    }
+    const result = await submitSecurityCode.call(runtime.client, code);
+    logInstaAuth("submit-security-code:result", {
+      userId,
+      sessionId,
+      username,
+      success: Boolean(result?.success),
+      challengeRequired: Boolean(result?.challengeRequired),
+      challengeType: result?.challengeType,
+      url: result?.url,
+      message: result?.message,
+    });
+
+    if (result.success) {
+      const profile = await fetchInstagramPublicProfile(username);
+      await InstaSessionProfileModel.updateOne(
+        { userId, sessionId },
+        {
+          $set: {
+            instagramUsername: username,
+            instagramFullName: profile.fullName,
+            instagramProfilePicUrl: profile.profilePicUrl,
+            lastLoginAt: new Date(),
+          },
+        },
+        { upsert: true },
+      );
+      await setActiveUserSession(userId, sessionId);
+      logInstaAuth("submit-security-code:completed", { userId, sessionId, username });
+    }
+
+    res.json({ ok: true, headless, ...result, activeSessionId: sessionId });
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    logInstaAuth("submit-security-code:error", { error: message });
     res.status(500).json({ ok: false, error: message });
   }
 });
@@ -636,6 +786,22 @@ app.post("/insta/open-login", async (req, res) => {
   try {
     if (hasUser && hasPass) {
       const result = await client.login(username, password);
+      const challengeInfo = resolveChallengeFromLoginResult(result as any);
+      const challengeRequired = challengeInfo.challengeRequired;
+      if (challengeRequired) {
+        res.json({
+          ok: true,
+          headless,
+          ...result,
+          challengeRequired: true,
+          challengeType: challengeInfo.challengeType,
+        });
+        return;
+      }
+      if (!result.success) {
+        res.status(409).json({ ok: false, error: "Instagram não confirmou o login.", ...result });
+        return;
+      }
       const userId = req.authUser?.id;
       if (userId) {
         const profile = await fetchInstagramPublicProfile(username.toLowerCase());

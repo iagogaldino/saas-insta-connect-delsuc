@@ -6,6 +6,9 @@ export type InstaLoginResponse = {
   headless: boolean
   success: boolean
   url: string
+  challengeRequired?: boolean
+  challengeType?: "security_code" | "two_factor" | "unknown"
+  message?: string
 }
 
 /**
@@ -20,6 +23,17 @@ export async function postInstaLoginForSession(sessionId: string, username: stri
     username,
     password,
   })
+}
+
+export async function postInstaSubmitSecurityCodeForSession(
+  sessionId: string,
+  code: string,
+  username: string,
+) {
+  return api.post<InstaLoginResponse>(
+    `/insta/sessions/${encodeURIComponent(sessionId)}/submit-security-code`,
+    { code, username },
+  )
 }
 
 export type InstaSessionItem = {

@@ -1,10 +1,11 @@
 import { AtSign, Loader2, LogIn, PlusCircle } from "lucide-react"
-import { useState, type FormEvent } from "react"
-import { useNavigate } from "react-router-dom"
+import { useEffect, useState, type FormEvent } from "react"
+import { useNavigate, useSearchParams } from "react-router-dom"
 import { useInstaConnect } from "../features/insta/use-insta-connect"
 
 export function ConnectInstagramPage() {
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
   const {
     isManagingSessions,
     sessions,
@@ -12,6 +13,7 @@ export function ConnectInstagramPage() {
     createSession,
     setActiveSession,
     startSessionRuntime,
+    stopSessionRuntime,
     removeSession,
     connectInstagramToSession,
     submitSecurityCodeForSession,
@@ -27,6 +29,26 @@ export function ConnectInstagramPage() {
   const [pendingTwoFactorUsername, setPendingTwoFactorUsername] = useState<string>("")
   const [previousActiveSessionId, setPreviousActiveSessionId] = useState<string | null>(null)
   const [securityCode, setSecurityCode] = useState("")
+  const [runtimeNotice, setRuntimeNotice] = useState<{ text: string; isAuthenticated: boolean } | null>(null)
+
+  useEffect(() => {
+    const reloginSessionId = searchParams.get("reloginSessionId")
+    if (!reloginSessionId) return
+    const targetSession = sessions.find((s) => s.id === reloginSessionId)
+    if (!targetSession) return
+
+    setError("Sua sessão Instagram expirou. Faça login novamente nesta sessão.")
+    setPendingSessionId(targetSession.id)
+    setPreviousActiveSessionId(activeSessionId)
+    setShowConnectForm(true)
+    setShowTwoFactorForm(false)
+    setPendingTwoFactorUsername("")
+    setUsername(targetSession.instagramUsername ?? "")
+    setPassword("")
+    setSecurityCode("")
+
+    void navigate("/connect-instagram", { replace: true })
+  }, [searchParams, sessions, activeSessionId, navigate])
 
   async function handleSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault()
@@ -213,10 +235,47 @@ export function ConnectInstagramPage() {
 
   async function handleStartSessionRuntime(sessionId: string) {
     setError(null)
+    setRuntimeNotice(null)
     const result = await startSessionRuntime(sessionId)
     if (!result.success) {
       setError(result.error)
+      return
     }
+    const sessionAfterStart = result.sessions.find((s) => s.id === sessionId)
+    if (!result.isInstagramAuthenticated) {
+      setRuntimeNotice({
+        text:
+          result.runtimeStatusMessage ??
+          "Instância ligada com sucesso para a sessão selecionada.",
+        isAuthenticated: false,
+      })
+    }
+    if (!result.isInstagramAuthenticated) {
+      setPendingSessionId(sessionId)
+      setPreviousActiveSessionId(activeSessionId)
+      setShowConnectForm(true)
+      setShowTwoFactorForm(false)
+      setPendingTwoFactorUsername("")
+      setUsername(sessionAfterStart?.instagramUsername ?? "")
+      setPassword("")
+      setSecurityCode("")
+    }
+  }
+
+  async function handleStopSessionRuntime(sessionId: string) {
+    setError(null)
+    setRuntimeNotice(null)
+    const result = await stopSessionRuntime(sessionId)
+    if (!result.success) {
+      setError(result.error)
+      return
+    }
+    setRuntimeNotice({
+      text:
+        result.runtimeStatusMessage ??
+        "Instância desligada com sucesso para a sessão selecionada.",
+      isAuthenticated: Boolean(result.isInstagramAuthenticated),
+    })
   }
 
   async function handleOpenSessionFeatures(
@@ -273,23 +332,41 @@ export function ConnectInstagramPage() {
             Nova sessão
           </button>
         </div>
+        {runtimeNotice ? (
+          <p
+            className={`rounded-lg border p-3 text-sm ${
+              runtimeNotice.isAuthenticated
+                ? "border-emerald-200 bg-emerald-50 text-emerald-800"
+                : "border-amber-200 bg-amber-50 text-amber-900"
+            }`}
+          >
+            {runtimeNotice.text}
+          </p>
+        ) : null}
         <div className="space-y-2">
           {sessions.length === 0 ? (
             <p className="text-sm text-slate-500">Nenhuma sessão encontrada ainda.</p>
           ) : (
-            sessions.map((session) => (
+            sessions.map((session) => {
+              const hasLoginOk =
+                session.isRuntimeOn && Boolean(session.instagramUsername) && !session.requiresRelogin
+
+              return (
               <div
                 key={session.id}
-                role="button"
-                tabIndex={0}
-                onClick={() =>
+                role={hasLoginOk ? "button" : undefined}
+                aria-disabled={!hasLoginOk}
+                tabIndex={hasLoginOk ? 0 : -1}
+                onClick={() => {
+                  if (!hasLoginOk) return
                   void handleOpenSessionFeatures(
                     session.id,
                     session.isActive,
                     Boolean(session.instagramUsername),
                   )
-                }
+                }}
                 onKeyDown={(e) => {
+                  if (!hasLoginOk) return
                   if (e.key === "Enter" || e.key === " ") {
                     e.preventDefault()
                     void handleOpenSessionFeatures(
@@ -299,7 +376,11 @@ export function ConnectInstagramPage() {
                     )
                   }
                 }}
-                className="flex cursor-pointer items-center justify-between rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 transition hover:border-slate-300 hover:bg-slate-100"
+                className={`flex cursor-pointer items-center justify-between rounded-lg border px-3 py-2 transition ${
+                  hasLoginOk
+                    ? "border-emerald-300 bg-emerald-50 hover:border-emerald-400 hover:bg-emerald-100/70"
+                    : "cursor-not-allowed border-slate-200 bg-slate-50 opacity-80"
+                }`}
               >
                 <div className="min-w-0 flex items-center gap-2">
                   {session.instagramProfilePicUrl ? (
@@ -320,17 +401,12 @@ export function ConnectInstagramPage() {
                         {session.instagramFullName ? ` - ${session.instagramFullName}` : ""}
                       </p>
                     ) : null}
-                    <p className="truncate font-mono text-[11px] text-slate-600">{session.id}</p>
+                    <p className={`truncate font-mono text-[11px] ${hasLoginOk ? "text-emerald-800" : "text-slate-600"}`}>
+                      {session.id}
+                    </p>
                   </div>
                 </div>
-                <div className="ml-3">
-                  <p className="text-xs text-slate-500">
-                    {session.isActive ? "Sessão ativa" : "Sessão disponível"}
-                  </p>
-                  <p className={`text-xs ${session.isRuntimeOn ? "text-emerald-700" : "text-slate-500"}`}>
-                    Instância: {session.isRuntimeOn ? "ligada" : "desligada"}
-                  </p>
-                </div>
+                
                 {!session.isActive ? (
                   <div className="flex items-center gap-2">
                     {!session.isRuntimeOn ? (
@@ -345,7 +421,19 @@ export function ConnectInstagramPage() {
                       >
                         Ligar instância
                       </button>
-                    ) : null}
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          void handleStopSessionRuntime(session.id)
+                        }}
+                        disabled={isManagingSessions}
+                        className="rounded-lg border border-amber-300 bg-white px-2.5 py-1 text-xs text-amber-700 hover:bg-amber-50 disabled:cursor-not-allowed disabled:opacity-70"
+                      >
+                        Desligar instância
+                      </button>
+                    )}
                     <button
                       type="button"
                       onClick={(e) => {
@@ -383,7 +471,19 @@ export function ConnectInstagramPage() {
                       >
                         Ligar instância
                       </button>
-                    ) : null}
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          void handleStopSessionRuntime(session.id)
+                        }}
+                        disabled={isManagingSessions}
+                        className="rounded-lg border border-amber-300 bg-white px-2.5 py-1 text-xs text-amber-700 hover:bg-amber-50 disabled:cursor-not-allowed disabled:opacity-70"
+                      >
+                        Desligar instância
+                      </button>
+                    )}
                     <span className="rounded bg-emerald-100 px-2 py-1 text-xs text-emerald-700">Ativa</span>
                     <button
                       type="button"
@@ -399,7 +499,7 @@ export function ConnectInstagramPage() {
                   </div>
                 )}
               </div>
-            ))
+            )})
           )}
         </div>
       </div>

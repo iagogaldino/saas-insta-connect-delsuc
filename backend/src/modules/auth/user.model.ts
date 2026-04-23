@@ -13,22 +13,10 @@ const userSchema = new Schema(
       type: String,
       required: true,
     },
-    instaSessionId: {
-      type: String,
-      required: false,
-      default: null,
-      index: true,
-    },
     instaSessionIds: {
       type: [String],
       required: false,
       default: [],
-    },
-    activeInstaSessionId: {
-      type: String,
-      required: false,
-      default: null,
-      index: true,
     },
   },
   {

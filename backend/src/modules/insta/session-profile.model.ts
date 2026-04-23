@@ -8,6 +8,7 @@ const instaSessionProfileSchema = new Schema(
     instagramFullName: { type: String, required: false, default: null },
     instagramProfilePicUrl: { type: String, required: false, default: null },
     lastLoginAt: { type: Date, required: true, default: Date.now },
+    requiresRelogin: { type: Boolean, required: true, default: false },
   },
   {
     versionKey: false,

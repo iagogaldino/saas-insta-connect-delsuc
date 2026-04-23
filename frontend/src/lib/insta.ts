@@ -40,6 +40,7 @@ export type InstaSessionItem = {
   id: string
   isActive: boolean
   isRuntimeOn?: boolean
+  requiresRelogin?: boolean
   instagramUsername: string | null
   instagramFullName: string | null
   instagramProfilePicUrl: string | null
@@ -49,6 +50,9 @@ export type InstaSessionsResponse = {
   ok: true
   activeSessionId: string | null
   sessions: InstaSessionItem[]
+  isInstagramAuthenticated?: boolean
+  runtimeStatusMessage?: string
+  loginUrl?: string
 }
 
 export async function getInstaSessions() {
@@ -69,6 +73,10 @@ export async function deleteInstaSession(sessionId: string) {
 
 export async function postStartInstaSessionRuntime(sessionId: string) {
   return api.post<InstaSessionsResponse>(`/insta/sessions/${encodeURIComponent(sessionId)}/runtime/start`)
+}
+
+export async function postStopInstaSessionRuntime(sessionId: string) {
+  return api.post<InstaSessionsResponse>(`/insta/sessions/${encodeURIComponent(sessionId)}/runtime/stop`)
 }
 
 export type AutoFollowPrivacyFilter = "any" | "public" | "private"

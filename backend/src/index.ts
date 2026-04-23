@@ -121,7 +121,7 @@ async function buildSessionsResponse(userId: string, state: UserSessionState) {
     userId,
     sessionId: { $in: state.sessionIds },
   })
-    .select("sessionId instagramUsername instagramFullName instagramProfilePicUrl")
+    .select("sessionId instagramUsername instagramFullName instagramProfilePicUrl requiresRelogin")
     .lean();
 
   const bySession = new Map(profiles.map((profile) => [profile.sessionId, profile] as const));
@@ -137,9 +137,19 @@ async function buildSessionsResponse(userId: string, state: UserSessionState) {
         instagramUsername: profile?.instagramUsername ?? null,
         instagramFullName: profile?.instagramFullName ?? null,
         instagramProfilePicUrl: profile?.instagramProfilePicUrl ?? null,
+        requiresRelogin: Boolean(profile?.requiresRelogin),
       };
     }),
   };
+}
+
+async function markSessionRequiresRelogin(userId: string, sessionId: string, reason: string): Promise<void> {
+  await InstaSessionProfileModel.updateOne(
+    { userId, sessionId },
+    { $set: { requiresRelogin: true } },
+    { upsert: false },
+  ).catch(() => null);
+  logInstaAuth("session:requires-relogin", { userId, sessionId, reason });
 }
 
 async function cleanupSessionFiles(sessionId: string): Promise<void> {
@@ -160,31 +170,36 @@ async function cleanupSessionFiles(sessionId: string): Promise<void> {
 }
 
 async function getOrCreateUserSessionState(userId: string): Promise<UserSessionState> {
-  const existing = await UserModel.findById(userId)
+  type UserSessionStateRecord = {
+    instaSessionIds?: string[] | null;
+    // Legacy fields kept only for read + migration cleanup.
+    instaSessionId?: string | null;
+    activeInstaSessionId?: string | null;
+  };
+
+  const existing = (await UserModel.findById(userId)
     .select("instaSessionId instaSessionIds activeInstaSessionId")
-    .lean();
+    .lean()) as UserSessionStateRecord | null;
   if (!existing) {
     throw new Error("Authenticated user not found.");
   }
 
   const fromLegacy = typeof existing.instaSessionId === "string" ? existing.instaSessionId : null;
   const fromArray = Array.isArray(existing.instaSessionIds) ? existing.instaSessionIds : [];
-  const sessionIds = uniqueSessionIds([...fromArray, fromLegacy]);
   const activeCandidate =
     typeof existing.activeInstaSessionId === "string" ? existing.activeInstaSessionId : null;
-  const hasActiveFieldPersisted = existing.activeInstaSessionId !== undefined;
-
-  const finalSessionIds = sessionIds;
-  const finalActiveSessionId =
-    activeCandidate && finalSessionIds.includes(activeCandidate)
-      ? activeCandidate
-      : hasActiveFieldPersisted
-        ? null
-        : finalSessionIds[0] ?? null;
+  const withoutLegacy = uniqueSessionIds([...fromArray, fromLegacy]);
+  const finalSessionIds =
+    activeCandidate && withoutLegacy.includes(activeCandidate)
+      ? uniqueSessionIds([activeCandidate, ...withoutLegacy])
+      : withoutLegacy;
+  const finalActiveSessionId = finalSessionIds[0] ?? null;
 
   const needsSync =
     finalSessionIds.length !== fromArray.length ||
-    finalActiveSessionId !== (existing.activeInstaSessionId ?? null);
+    finalSessionIds.some((sessionId, index) => sessionId !== fromArray[index]) ||
+    fromLegacy !== null ||
+    existing.activeInstaSessionId !== undefined;
 
   if (needsSync) {
     await UserModel.updateOne(
@@ -192,8 +207,10 @@ async function getOrCreateUserSessionState(userId: string): Promise<UserSessionS
       {
         $set: {
           instaSessionIds: finalSessionIds,
-          activeInstaSessionId: finalActiveSessionId,
-          instaSessionId: finalActiveSessionId,
+        },
+        $unset: {
+          activeInstaSessionId: "",
+          instaSessionId: "",
         },
       },
     );
@@ -208,16 +225,20 @@ async function getOrCreateUserSessionState(userId: string): Promise<UserSessionS
 async function createUserSession(userId: string, setAsActive: boolean): Promise<UserSessionState> {
   const current = await getOrCreateUserSessionState(userId);
   const newSessionId = randomUUID();
-  const nextSessionIds = uniqueSessionIds([...current.sessionIds, newSessionId]);
-  const nextActiveSessionId = setAsActive ? newSessionId : current.activeSessionId;
+  const nextSessionIds = setAsActive
+    ? uniqueSessionIds([newSessionId, ...current.sessionIds])
+    : uniqueSessionIds([...current.sessionIds, newSessionId]);
+  const nextActiveSessionId = nextSessionIds[0] ?? null;
 
   await UserModel.updateOne(
     { _id: userId },
     {
       $set: {
         instaSessionIds: nextSessionIds,
-        activeInstaSessionId: nextActiveSessionId,
-        instaSessionId: nextActiveSessionId,
+      },
+      $unset: {
+        activeInstaSessionId: "",
+        instaSessionId: "",
       },
     },
   );
@@ -245,8 +266,11 @@ async function setActiveUserSession(userId: string, sessionId: string): Promise<
     { _id: userId },
     {
       $set: {
-        activeInstaSessionId: sessionId,
-        instaSessionId: sessionId,
+        instaSessionIds: [sessionId, ...current.sessionIds.filter((id) => id !== sessionId)],
+      },
+      $unset: {
+        activeInstaSessionId: "",
+        instaSessionId: "",
       },
     },
   );
@@ -272,8 +296,10 @@ async function removeUserSession(userId: string, sessionId: string): Promise<Use
     {
       $set: {
         instaSessionIds: nextSessionIds,
-        activeInstaSessionId: nextActiveSessionId,
-        instaSessionId: nextActiveSessionId,
+      },
+      $unset: {
+        activeInstaSessionId: "",
+        instaSessionId: "",
       },
     },
   );
@@ -463,8 +489,63 @@ app.post("/insta/sessions/:sessionId/runtime/start", async (req, res) => {
 
     const runtime = getOrCreateInstaRuntimeBySessionId(sessionId);
     await runtime.client.launch();
+    const loginUrl = await runtime.client.openLoginPage();
+    const isInstagramAuthenticated = !loginUrl.includes("/accounts/login");
+    const runtimeStatusMessage = isInstagramAuthenticated
+      ? "Instância ligada e sessão autenticada no Instagram."
+      : "Instância ligada, mas esta sessão não está logada no Instagram.";
+    if (!isInstagramAuthenticated) {
+      await markSessionRequiresRelogin(userId, sessionId, "runtime_started_but_not_authenticated");
+    }
 
-    res.json(await buildSessionsResponse(userId, state));
+    res.json({
+      ...(await buildSessionsResponse(userId, state)),
+      isInstagramAuthenticated,
+      runtimeStatusMessage,
+      loginUrl,
+    });
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    res.status(500).json({ ok: false, error: message });
+  }
+});
+
+app.post("/insta/sessions/:sessionId/runtime/stop", async (req, res) => {
+  try {
+    const userId = req.authUser?.id;
+    if (!userId) {
+      res.status(401).json({ ok: false, error: "Unauthorized." });
+      return;
+    }
+
+    const sessionId = typeof req.params.sessionId === "string" ? req.params.sessionId.trim() : "";
+    if (!sessionId) {
+      res.status(400).json({ ok: false, error: "sessionId é obrigatório." });
+      return;
+    }
+
+    const state = await getOrCreateUserSessionState(userId);
+    if (!state.sessionIds.includes(sessionId)) {
+      res.status(404).json({ ok: false, error: "Sessão não encontrada para este usuário." });
+      return;
+    }
+
+    const runtime = instaRuntimes.get(sessionId);
+    if (runtime) {
+      try {
+        runtime.client.stopDmTap();
+      } catch {
+        // noop
+      }
+      await runtime.client.close().catch(() => null);
+      instaRuntimes.delete(sessionId);
+    }
+
+    res.json({
+      ...(await buildSessionsResponse(userId, state)),
+      isInstagramAuthenticated: false,
+      runtimeStatusMessage: "Instância desligada com sucesso.",
+    });
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
     res.status(500).json({ ok: false, error: message });
@@ -523,6 +604,7 @@ app.post("/insta/sessions/:sessionId/connect-login", async (req, res) => {
       message: (result as any)?.message,
     });
     if (challengeRequired) {
+      await markSessionRequiresRelogin(userId, sessionId, "challenge_required_on_login");
       res.json({
         ok: true,
         headless,
@@ -547,6 +629,7 @@ app.post("/insta/sessions/:sessionId/connect-login", async (req, res) => {
           instagramFullName: profile.fullName,
           instagramProfilePicUrl: profile.profilePicUrl,
           lastLoginAt: new Date(),
+          requiresRelogin: false,
         },
       },
       { upsert: true },
@@ -632,6 +715,7 @@ app.post("/insta/sessions/:sessionId/submit-security-code", async (req, res) => 
             instagramFullName: profile.fullName,
             instagramProfilePicUrl: profile.profilePicUrl,
             lastLoginAt: new Date(),
+            requiresRelogin: false,
           },
         },
         { upsert: true },
@@ -816,10 +900,14 @@ app.post("/insta/open-login", async (req, res) => {
   }
   try {
     if (hasUser && hasPass) {
+      const userId = req.authUser?.id;
       const result = await client.login(username, password);
       const challengeInfo = resolveChallengeFromLoginResult(result as any);
       const challengeRequired = challengeInfo.challengeRequired;
       if (challengeRequired) {
+        if (userId) {
+          await markSessionRequiresRelogin(userId, runtime.sessionId, "challenge_required_on_open_login");
+        }
         res.json({
           ok: true,
           headless,
@@ -833,7 +921,6 @@ app.post("/insta/open-login", async (req, res) => {
         res.status(409).json({ ok: false, error: "Instagram não confirmou o login.", ...result });
         return;
       }
-      const userId = req.authUser?.id;
       if (userId) {
         const profile = await fetchInstagramPublicProfile(username.toLowerCase());
         await InstaSessionProfileModel.updateOne(
@@ -844,6 +931,7 @@ app.post("/insta/open-login", async (req, res) => {
               instagramFullName: profile.fullName,
               instagramProfilePicUrl: profile.profilePicUrl,
               lastLoginAt: new Date(),
+              requiresRelogin: false,
             },
           },
           { upsert: true },
@@ -856,6 +944,10 @@ app.post("/insta/open-login", async (req, res) => {
     res.json({ ok: true, url, headless });
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
+    const userId = req.authUser?.id;
+    if (userId && /sess[aã]o n[aã]o autenticada/i.test(message)) {
+      await markSessionRequiresRelogin(userId, runtime.sessionId, "auto_follow_not_authenticated");
+    }
     res.status(500).json({ ok: false, error: message });
   }
 });

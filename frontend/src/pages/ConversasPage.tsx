@@ -9,8 +9,10 @@ import { getConversations, threadIdFromHref, type ConversationItem } from "../li
 const DEFAULT_LIMIT = 30
 
 export function ConversasPage() {
-  const { isLinked } = useInstaConnect()
+  const { isLinked, activeSessionId, sessions } = useInstaConnect()
   const [limit, setLimit] = useState(DEFAULT_LIMIT)
+  const activeSession = sessions.find((s) => s.id === activeSessionId) ?? null
+  const isSessionConnected = Boolean(activeSession?.instagramUsername)
 
   const {
     data,
@@ -36,16 +38,16 @@ export function ConversasPage() {
         throw e
       }
     },
-    enabled: isLinked,
+    enabled: isLinked && isSessionConnected,
   })
 
   const errMessage = isError && error instanceof Error ? error.message : null
 
-  if (!isLinked) {
+  if (!isLinked || !isSessionConnected) {
     return (
       <div className="mx-auto max-w-lg rounded-xl border border-amber-200 bg-amber-50 p-6 text-center">
         <Inbox className="mx-auto h-10 w-10 text-amber-800" aria-hidden />
-        <h2 className="mt-3 text-lg font-semibold text-amber-950">Conecte o Instagram</h2>
+        <h2 className="mt-3 text-lg font-semibold text-amber-950">Conecte o Instagram na sessão ativa</h2>
         <p className="mt-1 text-sm text-amber-900/80">
           Para listar as conversas, o backend precisa de uma sessão ativa. Use a ligação no menu
           <strong> Instagram</strong>.

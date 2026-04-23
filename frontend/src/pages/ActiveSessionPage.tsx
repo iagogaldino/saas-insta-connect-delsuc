@@ -7,7 +7,7 @@ import { postAutoFollowSuggested, type AutoFollowPrivacyFilter, type AutoFollowR
 
 export function ActiveSessionPage() {
   const navigate = useNavigate()
-  const { activeSessionId } = useInstaConnect()
+  const { activeSessionId, sessions } = useInstaConnect()
   const [quantity, setQuantity] = useState(3)
   const [privacyFilter, setPrivacyFilter] = useState<AutoFollowPrivacyFilter>("any")
   const [isSubmitting, setIsSubmitting] = useState(false)
@@ -27,7 +27,16 @@ export function ActiveSessionPage() {
     } catch (e) {
       if (axios.isAxiosError(e)) {
         const body = e.response?.data as { error?: string } | undefined
-        setError(body?.error ?? e.message)
+        const apiError = body?.error ?? e.message
+        setError(apiError)
+        const authSessionError =
+          apiError.includes("Sessao nao autenticada. Faca login antes de seguir.") ||
+          apiError.includes("Sessão não autenticada. Faça login antes de seguir.")
+        if (authSessionError && activeSessionId) {
+          void navigate(
+            `/connect-instagram?reloginSessionId=${encodeURIComponent(activeSessionId)}`,
+          )
+        }
       } else {
         setError(e instanceof Error ? e.message : "Erro desconhecido.")
       }
@@ -39,6 +48,8 @@ export function ActiveSessionPage() {
   const followedItems = result?.results.filter((item) => item.success) ?? []
   const failedItems = result?.results.filter((item) => !item.success) ?? []
   const visibleItems = resultTab === "followed" ? followedItems : failedItems
+  const activeSession = sessions.find((s) => s.id === activeSessionId) ?? null
+  const isSessionConnected = Boolean(activeSession?.instagramUsername)
 
   if (!activeSessionId) {
     return (
@@ -55,6 +66,12 @@ export function ActiveSessionPage() {
         <p className="text-sm text-slate-500">
           Sessão ativa: <code className="rounded bg-slate-100 px-1">{activeSessionId}</code>
         </p>
+        {!isSessionConnected ? (
+          <p className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+            Esta sessão ainda não está conectada no Instagram. Faça login na página de sessões para
+            habilitar conversas e automações.
+          </p>
+        ) : null}
       </div>
 
       <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
@@ -68,7 +85,8 @@ export function ActiveSessionPage() {
         <button
           type="button"
           onClick={() => void navigate("/conversas")}
-          className="rounded-lg border border-slate-200 px-4 py-2 text-sm text-slate-700 hover:bg-slate-50"
+          disabled={!isSessionConnected}
+          className="rounded-lg border border-slate-200 px-4 py-2 text-sm text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
         >
           Abrir conversas da sessão
         </button>
@@ -118,7 +136,7 @@ export function ActiveSessionPage() {
               max={100}
               value={quantity}
               onChange={(e) => setQuantity(Number(e.target.value))}
-              disabled={isSubmitting}
+              disabled={isSubmitting || !isSessionConnected}
               className="w-full rounded-lg border border-slate-200 px-3 py-2 text-slate-900 shadow-sm focus:border-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-300 sm:w-56"
             />
           </div>
@@ -131,7 +149,7 @@ export function ActiveSessionPage() {
               id="af-filter"
               value={privacyFilter}
               onChange={(e) => setPrivacyFilter(e.target.value as AutoFollowPrivacyFilter)}
-              disabled={isSubmitting}
+              disabled={isSubmitting || !isSessionConnected}
               className="w-full rounded-lg border border-slate-200 px-3 py-2 text-slate-900 shadow-sm focus:border-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-300 sm:w-56"
             >
               <option value="any">Qualquer perfil</option>
@@ -145,7 +163,7 @@ export function ActiveSessionPage() {
           <div className="flex items-center gap-2">
             <button
               type="submit"
-              disabled={isSubmitting}
+              disabled={isSubmitting || !isSessionConnected}
               className="inline-flex items-center gap-2 rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-70"
             >
               {isSubmitting ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : <Play className="h-4 w-4" aria-hidden />}

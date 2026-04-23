@@ -9,6 +9,7 @@ import {
   postInstaLogin,
   postInstaLoginForSession,
   postStartInstaSessionRuntime,
+  postStopInstaSessionRuntime,
   postInstaSubmitSecurityCodeForSession,
 } from "../../lib/insta"
 import { InstaConnectContext, type InstaConnectValue } from "./insta-connect-context"
@@ -98,7 +99,37 @@ export function InstaConnectProvider({ children }: { children: ReactNode }) {
       const { data } = await postStartInstaSessionRuntime(sessionId)
       setSessions(data.sessions)
       setActiveSessionId(data.activeSessionId)
-      return { success: true, sessions: data.sessions, activeSessionId: data.activeSessionId }
+      return {
+        success: true,
+        sessions: data.sessions,
+        activeSessionId: data.activeSessionId,
+        isInstagramAuthenticated: data.isInstagramAuthenticated,
+        runtimeStatusMessage: data.runtimeStatusMessage,
+      }
+    } catch (e) {
+      if (axios.isAxiosError(e)) {
+        const body = e.response?.data as { error?: string } | undefined
+        return { success: false, error: body?.error ?? e.message }
+      }
+      return { success: false, error: e instanceof Error ? e.message : "Erro desconhecido." }
+    } finally {
+      setIsManagingSessions(false)
+    }
+  }, [])
+
+  const stopSessionRuntime = useCallback(async (sessionId: string): Promise<InstaSessionsResult> => {
+    setIsManagingSessions(true)
+    try {
+      const { data } = await postStopInstaSessionRuntime(sessionId)
+      setSessions(data.sessions)
+      setActiveSessionId(data.activeSessionId)
+      return {
+        success: true,
+        sessions: data.sessions,
+        activeSessionId: data.activeSessionId,
+        isInstagramAuthenticated: data.isInstagramAuthenticated,
+        runtimeStatusMessage: data.runtimeStatusMessage,
+      }
     } catch (e) {
       if (axios.isAxiosError(e)) {
         const body = e.response?.data as { error?: string } | undefined
@@ -309,6 +340,7 @@ export function InstaConnectProvider({ children }: { children: ReactNode }) {
       createSession,
       setActiveSession,
       startSessionRuntime,
+      stopSessionRuntime,
       removeSession,
       connectInstagram,
       connectInstagramToSession,
@@ -324,6 +356,7 @@ export function InstaConnectProvider({ children }: { children: ReactNode }) {
       createSession,
       setActiveSession,
       startSessionRuntime,
+      stopSessionRuntime,
       removeSession,
       connectInstagram,
       connectInstagramToSession,

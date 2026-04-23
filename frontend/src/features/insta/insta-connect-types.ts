@@ -15,11 +15,18 @@ export type InstaSessionItem = {
   id: string
   isActive: boolean
   isRuntimeOn?: boolean
+  requiresRelogin?: boolean
   instagramUsername: string | null
   instagramFullName: string | null
   instagramProfilePicUrl: string | null
 }
 
 export type InstaSessionsResult =
-  | { success: true; sessions: InstaSessionItem[]; activeSessionId: string | null }
+  | {
+      success: true
+      sessions: InstaSessionItem[]
+      activeSessionId: string | null
+      isInstagramAuthenticated?: boolean
+      runtimeStatusMessage?: string
+    }
   | { success: false; error: string }

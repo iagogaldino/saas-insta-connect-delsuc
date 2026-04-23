@@ -35,7 +35,9 @@ export function ChatPage() {
   const threadId = rawThreadId ? decodeURIComponent(rawThreadId) : ""
   const conversationTitle = titleFromQueryOrState(searchParams, titleFromState)
 
-  const { isLinked } = useInstaConnect()
+  const { isLinked, activeSessionId, sessions } = useInstaConnect()
+  const activeSession = sessions.find((s) => s.id === activeSessionId) ?? null
+  const isSessionConnected = Boolean(activeSession?.instagramUsername)
   const queryClient = useQueryClient()
   const [text, setText] = useState("")
   const openRan = useRef(false)
@@ -62,7 +64,7 @@ export function ChatPage() {
         throw e
       }
     },
-    enabled: isLinked && threadId.length > 0,
+    enabled: isLinked && isSessionConnected && threadId.length > 0,
   })
 
   const sendMutation = useMutation({
@@ -82,7 +84,7 @@ export function ChatPage() {
   })
 
   useEffect(() => {
-    if (!isLinked || !threadId || !conversationTitle.trim() || openRan.current) return
+    if (!isLinked || !isSessionConnected || !threadId || !conversationTitle.trim() || openRan.current) return
     openRan.current = true
     void (async () => {
       try {
@@ -92,7 +94,7 @@ export function ChatPage() {
         void refetch()
       }
     })()
-  }, [isLinked, threadId, conversationTitle, refetch])
+  }, [isLinked, isSessionConnected, threadId, conversationTitle, refetch])
 
   const errText = isError && error instanceof Error ? error.message : null
 
@@ -104,10 +106,10 @@ export function ChatPage() {
     sendMutation.mutate(t)
   }
 
-  if (!isLinked) {
+  if (!isLinked || !isSessionConnected) {
     return (
       <div className="mx-auto max-w-lg rounded-xl border border-amber-200 bg-amber-50 p-6 text-center text-sm text-amber-900">
-        Conecte o Instagram no menu <strong>Instagram</strong> para abrir o chat.
+        Conecte o Instagram na sessão ativa no menu <strong>Instagram</strong> para abrir o chat.
         <div className="mt-3">
           <Link to="/connect-instagram" className="font-medium text-amber-950 underline">
             Conectar

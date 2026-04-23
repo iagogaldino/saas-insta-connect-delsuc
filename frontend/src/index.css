@@ -1,0 +1,10 @@
+@import "tailwindcss";
+
+@layer base {
+  body {
+    @apply m-0 min-h-screen font-sans antialiased text-slate-900;
+  }
+  #root {
+    @apply min-h-screen;
+  }
+}

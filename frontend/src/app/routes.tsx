@@ -7,6 +7,7 @@ import { ChatPage } from "../pages/ChatPage"
 import { ConversasPage } from "../pages/ConversasPage"
 import { DashboardLayout } from "../components/layout/DashboardLayout"
 import { ProtectedRoute } from "../features/auth/protected-route"
+import { InstaConnectProvider } from "../features/insta/insta-connect-provider"
 
 export const router = createBrowserRouter([
   { path: "/login", element: <LoginPage /> },
@@ -14,7 +15,9 @@ export const router = createBrowserRouter([
     path: "/",
     element: (
       <ProtectedRoute>
-        <DashboardLayout />
+        <InstaConnectProvider>
+          <DashboardLayout />
+        </InstaConnectProvider>
       </ProtectedRoute>
     ),
     children: [

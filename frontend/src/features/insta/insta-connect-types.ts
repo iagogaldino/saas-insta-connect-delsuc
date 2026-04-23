@@ -5,8 +5,11 @@ export type InstaLinkResult =
 export type InstaSessionItem = {
   id: string
   isActive: boolean
+  instagramUsername: string | null
+  instagramFullName: string | null
+  instagramProfilePicUrl: string | null
 }
 
 export type InstaSessionsResult =
-  | { success: true; sessions: InstaSessionItem[]; activeSessionId: string }
+  | { success: true; sessions: InstaSessionItem[]; activeSessionId: string | null }
   | { success: false; error: string }

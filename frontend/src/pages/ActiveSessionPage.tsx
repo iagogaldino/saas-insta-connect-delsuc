@@ -79,6 +79,32 @@ export function ActiveSessionPage() {
           <Users className="h-5 w-5" aria-hidden />
           <h3 className="text-base font-semibold">AutoFollow</h3>
         </div>
+        <div className="mb-5 space-y-3 rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+          <p className="font-medium">
+            Recomendações de segurança (estimativas de mercado para 2026, sem números oficiais do Instagram):
+          </p>
+          <div className="grid gap-2 md:grid-cols-2">
+            <div className="rounded border border-amber-200 bg-white/70 p-2">
+              <p className="font-semibold">Conta nova (&lt; 3 meses)</p>
+              <p>50 a 100 follows/dia</p>
+              <p className="text-xs opacity-80">Ritmo sugerido: 5 a 10 por hora</p>
+            </div>
+            <div className="rounded border border-amber-200 bg-white/70 p-2">
+              <p className="font-semibold">Conta antiga/ativa</p>
+              <p>150 a 200 follows/dia</p>
+              <p className="text-xs opacity-80">Ritmo sugerido: 15 a 20 por hora</p>
+            </div>
+          </div>
+          <div className="space-y-1 text-xs leading-relaxed">
+            <p>• Limite total da conta: ~7.500 pessoas seguidas.</p>
+            <p>• Simule comportamento humano: intervalos de 30 a 60 segundos entre ações.</p>
+            <p>• Evite combinar muitos follows + curtidas + DMs no mesmo dia.</p>
+            <p>• Aquecimento recomendado para conta nova: começar com ~20/dia e subir gradualmente.</p>
+            <p>
+              • Se ocorrer bloqueio de ação (Action Block), pause a automação por 24 a 48 horas.
+            </p>
+          </div>
+        </div>
 
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>

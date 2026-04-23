@@ -15,14 +15,24 @@ export async function postInstaLogin(username: string, password: string) {
   return api.post<InstaLoginResponse>("/insta/open-login", { username, password })
 }
 
+export async function postInstaLoginForSession(sessionId: string, username: string, password: string) {
+  return api.post<InstaLoginResponse>(`/insta/sessions/${encodeURIComponent(sessionId)}/connect-login`, {
+    username,
+    password,
+  })
+}
+
 export type InstaSessionItem = {
   id: string
   isActive: boolean
+  instagramUsername: string | null
+  instagramFullName: string | null
+  instagramProfilePicUrl: string | null
 }
 
 export type InstaSessionsResponse = {
   ok: true
-  activeSessionId: string
+  activeSessionId: string | null
   sessions: InstaSessionItem[]
 }
 

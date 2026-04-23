@@ -1,5 +1,7 @@
 import "dotenv/config";
+import { rm } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
+import path from "node:path";
 import express from "express";
 import type { Request, Response } from "express";
 import { createInstaConnect, type DmTapEvent, type InstaConnect } from "insta-connect-delsuc";
@@ -40,11 +42,96 @@ const instaRuntimes = new Map<string, InstaRuntime>();
 
 type UserSessionState = {
   sessionIds: string[];
-  activeSessionId: string;
+  activeSessionId: string | null;
+};
+
+type InstagramPublicProfile = {
+  fullName: string | null;
+  profilePicUrl: string | null;
 };
 
 function uniqueSessionIds(items: Array<string | null | undefined>): string[] {
   return [...new Set(items.filter((item): item is string => typeof item === "string" && item.trim().length > 0))];
+}
+
+async function fetchInstagramPublicProfile(username: string): Promise<InstagramPublicProfile> {
+  try {
+    const response = await fetch(
+      `https://www.instagram.com/api/v1/users/web_profile_info/?username=${encodeURIComponent(username)}`,
+      {
+        headers: {
+          "User-Agent": "Mozilla/5.0",
+          Accept: "application/json",
+        },
+      },
+    );
+    if (!response.ok) {
+      return { fullName: null, profilePicUrl: null };
+    }
+    const data = (await response.json()) as {
+      data?: {
+        user?: {
+          full_name?: string;
+          profile_pic_url_hd?: string;
+          profile_pic_url?: string;
+        };
+      };
+    };
+    const user = data?.data?.user;
+    return {
+      fullName: typeof user?.full_name === "string" ? user.full_name : null,
+      profilePicUrl:
+        typeof user?.profile_pic_url_hd === "string"
+          ? user.profile_pic_url_hd
+          : typeof user?.profile_pic_url === "string"
+            ? user.profile_pic_url
+            : null,
+    };
+  } catch {
+    return { fullName: null, profilePicUrl: null };
+  }
+}
+
+async function buildSessionsResponse(userId: string, state: UserSessionState) {
+  const profiles = await InstaSessionProfileModel.find({
+    userId,
+    sessionId: { $in: state.sessionIds },
+  })
+    .select("sessionId instagramUsername instagramFullName instagramProfilePicUrl")
+    .lean();
+
+  const bySession = new Map(profiles.map((profile) => [profile.sessionId, profile] as const));
+  return {
+    ok: true as const,
+    activeSessionId: state.activeSessionId,
+    sessions: state.sessionIds.map((id) => {
+      const profile = bySession.get(id);
+      return {
+        id,
+        isActive: id === state.activeSessionId,
+        instagramUsername: profile?.instagramUsername ?? null,
+        instagramFullName: profile?.instagramFullName ?? null,
+        instagramProfilePicUrl: profile?.instagramProfilePicUrl ?? null,
+      };
+    }),
+  };
+}
+
+async function cleanupSessionFiles(sessionId: string): Promise<void> {
+  const targets = [
+    path.resolve(process.cwd(), ".session", sessionId),
+    path.resolve(process.cwd(), "..", "..", "lib-insta-connect", ".session", sessionId),
+  ];
+
+  await Promise.all(
+    targets.map(async (target) => {
+      try {
+        await rm(target, { recursive: true, force: true });
+      } catch {
+        // Ignore filesystem cleanup errors to avoid blocking API response.
+      }
+    }),
+  );
 }
 
 async function getOrCreateUserSessionState(userId: string): Promise<UserSessionState> {
@@ -60,16 +147,19 @@ async function getOrCreateUserSessionState(userId: string): Promise<UserSessionS
   const sessionIds = uniqueSessionIds([...fromArray, fromLegacy]);
   const activeCandidate =
     typeof existing.activeInstaSessionId === "string" ? existing.activeInstaSessionId : null;
+  const hasActiveFieldPersisted = existing.activeInstaSessionId !== undefined;
 
-  const generatedSessionId = sessionIds.length === 0 ? randomUUID() : null;
-  const finalSessionIds = generatedSessionId ? [generatedSessionId] : sessionIds;
+  const finalSessionIds = sessionIds;
   const finalActiveSessionId =
-    activeCandidate && finalSessionIds.includes(activeCandidate) ? activeCandidate : finalSessionIds[0];
+    activeCandidate && finalSessionIds.includes(activeCandidate)
+      ? activeCandidate
+      : hasActiveFieldPersisted
+        ? null
+        : finalSessionIds[0] ?? null;
 
   const needsSync =
-    generatedSessionId !== null ||
     finalSessionIds.length !== fromArray.length ||
-    finalActiveSessionId !== existing.activeInstaSessionId;
+    finalActiveSessionId !== (existing.activeInstaSessionId ?? null);
 
   if (needsSync) {
     await UserModel.updateOne(
@@ -119,6 +209,13 @@ async function setActiveUserSession(userId: string, sessionId: string): Promise<
     throw new Error("SESSION_NOT_FOUND");
   }
 
+  const sessionProfile = await InstaSessionProfileModel.findOne({ userId, sessionId })
+    .select("instagramUsername")
+    .lean();
+  if (!sessionProfile?.instagramUsername) {
+    throw new Error("SESSION_NOT_CONNECTED");
+  }
+
   await UserModel.updateOne(
     { _id: userId },
     {
@@ -142,8 +239,8 @@ async function removeUserSession(userId: string, sessionId: string): Promise<Use
   }
 
   const remaining = current.sessionIds.filter((id) => id !== sessionId);
-  const nextSessionIds = remaining.length > 0 ? remaining : [randomUUID()];
-  const nextActiveSessionId = current.activeSessionId === sessionId ? nextSessionIds[0] : current.activeSessionId;
+  const nextSessionIds = remaining;
+  const nextActiveSessionId = current.activeSessionId === sessionId ? (nextSessionIds[0] ?? null) : current.activeSessionId;
 
   await UserModel.updateOne(
     { _id: userId },
@@ -170,6 +267,13 @@ async function getInstaRuntimeForRequest(req: Request): Promise<InstaRuntime> {
 
   const state = await getOrCreateUserSessionState(userId);
   const sessionId = state.activeSessionId;
+  if (!sessionId) {
+    throw new Error("NO_ACTIVE_SESSION");
+  }
+  return getOrCreateInstaRuntimeBySessionId(sessionId);
+}
+
+function getOrCreateInstaRuntimeBySessionId(sessionId: string): InstaRuntime {
   const existingRuntime = instaRuntimes.get(sessionId);
   if (existingRuntime) {
     return existingRuntime;
@@ -192,6 +296,20 @@ async function getInstaRuntimeForRequest(req: Request): Promise<InstaRuntime> {
   };
   instaRuntimes.set(sessionId, runtime);
   return runtime;
+}
+
+async function getInstaRuntimeOrSendError(req: Request, res: Response): Promise<InstaRuntime | null> {
+  try {
+    return await getInstaRuntimeForRequest(req);
+  } catch (e) {
+    if (e instanceof Error && e.message === "NO_ACTIVE_SESSION") {
+      res.status(400).json({ ok: false, error: "Nenhuma sessão ativa. Crie uma nova sessão." });
+      return null;
+    }
+    const message = e instanceof Error ? e.message : String(e);
+    res.status(500).json({ ok: false, error: message });
+    return null;
+  }
 }
 
 function writeSse(res: Response, event: string, payload: unknown) {
@@ -247,11 +365,7 @@ app.get("/insta/sessions", async (req, res) => {
       return;
     }
     const state = await getOrCreateUserSessionState(userId);
-    res.json({
-      ok: true,
-      activeSessionId: state.activeSessionId,
-      sessions: state.sessionIds.map((id) => ({ id, isActive: id === state.activeSessionId })),
-    });
+    res.json(await buildSessionsResponse(userId, state));
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
     res.status(500).json({ ok: false, error: message });
@@ -267,11 +381,7 @@ app.post("/insta/sessions", async (req, res) => {
     }
     const setAsActive = req.body?.setAsActive !== false;
     const state = await createUserSession(userId, setAsActive);
-    res.status(201).json({
-      ok: true,
-      activeSessionId: state.activeSessionId,
-      sessions: state.sessionIds.map((id) => ({ id, isActive: id === state.activeSessionId })),
-    });
+    res.status(201).json(await buildSessionsResponse(userId, state));
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
     res.status(500).json({ ok: false, error: message });
@@ -291,16 +401,67 @@ app.patch("/insta/sessions/active", async (req, res) => {
       return;
     }
     const state = await setActiveUserSession(userId, sessionId);
-    res.json({
-      ok: true,
-      activeSessionId: state.activeSessionId,
-      sessions: state.sessionIds.map((id) => ({ id, isActive: id === state.activeSessionId })),
-    });
+    res.json(await buildSessionsResponse(userId, state));
   } catch (e) {
     if (e instanceof Error && e.message === "SESSION_NOT_FOUND") {
       res.status(404).json({ ok: false, error: "Sessão não encontrada para este usuário." });
       return;
     }
+    if (e instanceof Error && e.message === "SESSION_NOT_CONNECTED") {
+      res.status(409).json({ ok: false, error: "Sessão sem Instagram conectado. Conecte antes de usar." });
+      return;
+    }
+    const message = e instanceof Error ? e.message : String(e);
+    res.status(500).json({ ok: false, error: message });
+  }
+});
+
+app.post("/insta/sessions/:sessionId/connect-login", async (req, res) => {
+  try {
+    const userId = req.authUser?.id;
+    if (!userId) {
+      res.status(401).json({ ok: false, error: "Unauthorized." });
+      return;
+    }
+
+    const sessionId = typeof req.params.sessionId === "string" ? req.params.sessionId.trim() : "";
+    const username = typeof req.body?.username === "string" ? req.body.username.trim() : "";
+    const password = typeof req.body?.password === "string" ? req.body.password : "";
+    if (!sessionId || !username || !password) {
+      res.status(400).json({ ok: false, error: "sessionId, username e password são obrigatórios." });
+      return;
+    }
+
+    const state = await getOrCreateUserSessionState(userId);
+    if (!state.sessionIds.includes(sessionId)) {
+      res.status(404).json({ ok: false, error: "Sessão não encontrada para este usuário." });
+      return;
+    }
+
+    const runtime = getOrCreateInstaRuntimeBySessionId(sessionId);
+    const result = await runtime.client.login(username, password);
+    if (!result.success) {
+      res.status(409).json({ ok: false, error: "Instagram não confirmou o login para esta sessão.", ...result });
+      return;
+    }
+
+    const profile = await fetchInstagramPublicProfile(username.toLowerCase());
+    await InstaSessionProfileModel.updateOne(
+      { userId, sessionId },
+      {
+        $set: {
+          instagramUsername: username.toLowerCase(),
+          instagramFullName: profile.fullName,
+          instagramProfilePicUrl: profile.profilePicUrl,
+          lastLoginAt: new Date(),
+        },
+      },
+      { upsert: true },
+    );
+
+    await setActiveUserSession(userId, sessionId);
+    res.json({ ok: true, headless, ...result, activeSessionId: sessionId });
+  } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
     res.status(500).json({ ok: false, error: message });
   }
@@ -333,12 +494,9 @@ app.delete("/insta/sessions/:sessionId", async (req, res) => {
       await runtime.client.close().catch(() => null);
       instaRuntimes.delete(sessionId);
     }
+    await cleanupSessionFiles(sessionId);
 
-    res.json({
-      ok: true,
-      activeSessionId: state.activeSessionId,
-      sessions: state.sessionIds.map((id) => ({ id, isActive: id === state.activeSessionId })),
-    });
+    res.json(await buildSessionsResponse(userId, state));
   } catch (e) {
     if (e instanceof Error && e.message === "SESSION_NOT_FOUND") {
       res.status(404).json({ ok: false, error: "Sessão não encontrada para este usuário." });
@@ -461,7 +619,8 @@ app.post("/test/insta-connect/launch", async (_req, res) => {
  * Reutiliza a mesma instância; `INSTA_HEADLESS=1` desativa a janela do Chrome.
  */
 app.post("/insta/open-login", async (req, res) => {
-  const runtime = await getInstaRuntimeForRequest(req);
+  const runtime = await getInstaRuntimeOrSendError(req, res);
+  if (!runtime) return;
   const client = runtime.client;
   const username = typeof req.body?.username === "string" ? req.body.username.trim() : "";
   const password = typeof req.body?.password === "string" ? req.body.password : "";
@@ -479,9 +638,17 @@ app.post("/insta/open-login", async (req, res) => {
       const result = await client.login(username, password);
       const userId = req.authUser?.id;
       if (userId) {
+        const profile = await fetchInstagramPublicProfile(username.toLowerCase());
         await InstaSessionProfileModel.updateOne(
           { userId, sessionId: runtime.sessionId },
-          { $set: { instagramUsername: username.toLowerCase(), lastLoginAt: new Date() } },
+          {
+            $set: {
+              instagramUsername: username.toLowerCase(),
+              instagramFullName: profile.fullName,
+              instagramProfilePicUrl: profile.profilePicUrl,
+              lastLoginAt: new Date(),
+            },
+          },
           { upsert: true },
         );
       }
@@ -501,7 +668,8 @@ app.post("/insta/open-login", async (req, res) => {
  * `conversationTitle` é o mesmo título visto em `listConversations` (ex.: nome da pessoa no inbox).
  */
 app.post("/insta/open-conversation", async (req, res) => {
-  const runtime = await getInstaRuntimeForRequest(req);
+  const runtime = await getInstaRuntimeOrSendError(req, res);
+  if (!runtime) return;
   const client = runtime.client;
   const conversationTitle =
     typeof req.body?.conversationTitle === "string" ? req.body.conversationTitle.trim() : "";
@@ -521,7 +689,8 @@ app.post("/insta/open-conversation", async (req, res) => {
 
 /** `GET /insta/messages?threadId=...&limit=20` — mensagens visíveis na thread (Puppeteer no DOM). */
 app.get("/insta/messages", async (req, res) => {
-  const runtime = await getInstaRuntimeForRequest(req);
+  const runtime = await getInstaRuntimeOrSendError(req, res);
+  if (!runtime) return;
   const client = runtime.client;
   const raw = req.query.threadId;
   const threadId = typeof raw === "string" ? raw.trim() : "";
@@ -553,7 +722,8 @@ app.get("/insta/messages", async (req, res) => {
 
 /** `GET /insta/conversations?limit=20` — requer sessão autenticada (login prévio no mesmo processo). */
 app.get("/insta/conversations", async (req, res) => {
-  const runtime = await getInstaRuntimeForRequest(req);
+  const runtime = await getInstaRuntimeOrSendError(req, res);
+  if (!runtime) return;
   const client = runtime.client;
   const limitParam = req.query.limit;
   let limit = 20;
@@ -579,7 +749,8 @@ app.get("/insta/conversations", async (req, res) => {
 
 /** `GET /insta/search-users?query=...&limit=20` — busca de usuários usando rede + DOM. */
 app.get("/insta/search-users", async (req, res) => {
-  const runtime = await getInstaRuntimeForRequest(req);
+  const runtime = await getInstaRuntimeOrSendError(req, res);
+  if (!runtime) return;
   const client = runtime.client;
   const rawQuery = req.query.query;
   const query = typeof rawQuery === "string" ? rawQuery.trim() : "";
@@ -613,7 +784,8 @@ app.get("/insta/search-users", async (req, res) => {
 
 /** `GET /insta/suggested-people?limit=20` — lista sugestões da aba Explore People. */
 app.get("/insta/suggested-people", async (req, res) => {
-  const runtime = await getInstaRuntimeForRequest(req);
+  const runtime = await getInstaRuntimeOrSendError(req, res);
+  if (!runtime) return;
   const client = runtime.client;
   const limitParam = req.query.limit;
   let limit = 20;
@@ -640,7 +812,8 @@ app.get("/insta/suggested-people", async (req, res) => {
 
 /** `POST /insta/auto-follow` — auto-follow de usuários sugeridos na sessão ativa. */
 app.post("/insta/auto-follow", async (req, res) => {
-  const runtime = await getInstaRuntimeForRequest(req);
+  const runtime = await getInstaRuntimeOrSendError(req, res);
+  if (!runtime) return;
   const client = runtime.client;
   const quantityRaw = req.body?.quantity;
   const privacyFilterRaw = req.body?.privacyFilter;
@@ -731,7 +904,8 @@ app.post("/insta/auto-follow", async (req, res) => {
  * Requer sessão autenticada; a lib simula teclado no Web (pode levar ~15–25s).
  */
 app.post("/insta/messages", async (req, res) => {
-  const runtime = await getInstaRuntimeForRequest(req);
+  const runtime = await getInstaRuntimeOrSendError(req, res);
+  if (!runtime) return;
   const client = runtime.client;
   const conversationTitle =
     typeof req.body?.conversationTitle === "string" ? req.body.conversationTitle.trim() : "";
@@ -761,7 +935,8 @@ app.post("/insta/messages", async (req, res) => {
  *   es.addEventListener("dmtap", (e) => console.log(JSON.parse((e as MessageEvent).data)));`
  */
 app.get("/insta/realtime/dm", async (req, res) => {
-  const runtime = await getInstaRuntimeForRequest(req);
+  const runtime = await getInstaRuntimeOrSendError(req, res);
+  if (!runtime) return;
   const allowOrigin = process.env.CORS_ORIGIN ?? "*";
   res.setHeader("Access-Control-Allow-Origin", allowOrigin);
   res.setHeader("Vary", "Origin");
@@ -796,7 +971,8 @@ app.get("/insta/realtime/dm", async (req, res) => {
 /** Desliga o dmTap (para de alimentar o SSE com novas mensagens). Conexões SSE podem permanecer abertas, mas vazias. */
 app.post("/insta/realtime/dm-tap/stop", async (req, res) => {
   try {
-    const runtime = await getInstaRuntimeForRequest(req);
+    const runtime = await getInstaRuntimeOrSendError(req, res);
+    if (!runtime) return;
     runtime.client.stopDmTap();
     res.json({ ok: true });
   } catch (e) {

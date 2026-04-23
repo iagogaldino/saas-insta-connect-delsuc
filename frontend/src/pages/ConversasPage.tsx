@@ -63,9 +63,6 @@ export function ConversasPage() {
   return (
     <div className="space-y-4">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-        <p className="text-sm text-slate-500">
-          Lista obtida do Instagram (backend). A primeira carga pode demorar.
-        </p>
         <div className="flex flex-wrap items-center gap-2">
           <label className="sr-only" htmlFor="limit">
             Limite

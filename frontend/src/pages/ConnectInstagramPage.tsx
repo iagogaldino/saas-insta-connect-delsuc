@@ -28,18 +28,13 @@ export function ConnectInstagramPage() {
         <h2 className="text-xl font-semibold text-slate-900">
           {isLinked ? "Instagram conectado" : "Conectar Instagram"}
         </h2>
-        <p className="mt-1 text-sm text-slate-500">
-          {isLinked
-            ? "A sessão neste browser está sincronizada com o que o backend concluiu. Pode ir a Conversas ou remover a ligação para inserir outra conta (formulário aparece de novo)."
-            : "Esta etapa chama o backend, que abre o Chromium e entra com as credenciais do site do Instagram. É independente do login do painel (em /login)."}
-        </p>
       </div>
 
       {isLinked ? (
         <div className="flex flex-col gap-3 rounded-xl border border-emerald-200 bg-emerald-50 p-4 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex items-center gap-2 text-sm font-medium text-emerald-800">
             <CheckCircle2 className="h-5 w-5 shrink-0" aria-hidden />
-            Sessão do Instagram ativa (confirmada pelo backend nesta máquina).
+            Sessão do Instagram ativa.
           </div>
           <button
             type="button"
@@ -48,7 +43,7 @@ export function ConnectInstagramPage() {
             }}
             className="rounded-lg border border-emerald-300 bg-white px-3 py-1.5 text-sm text-emerald-900 hover:bg-emerald-100"
           >
-            Remover ligação (apenas no browser)
+            Remover ligação
           </button>
         </div>
       ) : null}

@@ -9,7 +9,7 @@ export function DashboardPage() {
     <div className="space-y-6">
       <div className="flex flex-col gap-2 rounded-lg border border-slate-200 bg-white px-4 py-3 text-sm sm:flex-row sm:items-center sm:justify-between">
         <p className="text-slate-600">
-          <span className="font-medium text-slate-800">Instagram (backend):</span>{" "}
+          <span className="font-medium text-slate-800">Instagram</span>{" "}
           {isLinked ? (
             <span className="text-emerald-700">conectado</span>
           ) : (

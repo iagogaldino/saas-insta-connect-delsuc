@@ -222,7 +222,7 @@ export function ChatPage() {
               className="w-full resize-none rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-900 focus:border-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-200"
               placeholder={
                 canSend
-                  ? "Mensagem (enviada pelo browser no backend)"
+                  ? "Mensagem"
                   : "Abra a conversa pela lista para enviar"
               }
               value={text}

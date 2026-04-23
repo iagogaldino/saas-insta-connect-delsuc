@@ -35,8 +35,7 @@ export function LoginPage() {
       <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-8 shadow-lg">
         <h1 className="text-center text-2xl font-bold text-slate-900">InstagramConnect</h1>
         <p className="mt-1 text-center text-sm text-slate-500">
-          <strong>Login do painel</strong> (conta de acesso ao SAAS) — depois, conecte o Instagram
-          no menu.
+          <strong>Login do painel</strong>
         </p>
         <form onSubmit={handleSubmit} className="mt-8 space-y-4">
           <div>

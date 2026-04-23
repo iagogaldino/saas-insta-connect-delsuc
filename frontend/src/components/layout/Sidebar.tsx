@@ -12,7 +12,6 @@ export function Sidebar() {
     <aside className="flex w-60 shrink-0 flex-col border-r border-slate-200 bg-slate-900 text-slate-200">
       <div className="border-b border-slate-800 px-4 py-5">
         <span className="text-lg font-semibold tracking-tight text-white">InstagramConnect</span>
-        <p className="mt-0.5 text-xs text-slate-400">SAAS</p>
       </div>
       <nav className="flex flex-1 flex-col gap-0.5 p-3" aria-label="Navegação principal">
         <NavLink to="/" className={linkClass} end>

@@ -1188,6 +1188,89 @@ app.post("/insta/auto-follow", async (req, res) => {
   }
 });
 
+/** `POST /insta/auto-follow-followers` — segue N seguidores de um perfil alvo (API web de followers). */
+app.post("/insta/auto-follow-followers", async (req, res) => {
+  const runtime = await getInstaRuntimeOrSendError(req, res);
+  if (!runtime) return;
+  const client = runtime.client;
+  const targetRaw = req.body?.targetUsername;
+  const targetUsername = typeof targetRaw === "string" ? targetRaw.trim() : "";
+  if (!targetUsername) {
+    res
+      .status(400)
+      .json({ ok: false, error: "`targetUsername` é obrigatório (string não vazia)." });
+    return;
+  }
+
+  const quantityRaw = req.body?.quantity;
+  const privacyFilterRaw = req.body?.privacyFilter;
+
+  const quantity = Number(quantityRaw);
+  if (!Number.isFinite(quantity) || quantity < 1 || quantity > 100) {
+    res.status(400).json({ ok: false, error: "`quantity` deve ser um número entre 1 e 100." });
+    return;
+  }
+
+  const privacyFilter =
+    typeof privacyFilterRaw === "string" && privacyFilterRaw.trim().length > 0
+      ? privacyFilterRaw.trim().toLowerCase()
+      : "any";
+  if (!["any", "public", "private"].includes(privacyFilter)) {
+    res.status(400).json({ ok: false, error: "`privacyFilter` deve ser `any`, `public` ou `private`." });
+    return;
+  }
+
+  try {
+    const result = await client.autoFollowFollowersOfUser(targetUsername, quantity, { privacyFilter });
+
+    const enrichedResults = result.results.map((item) => {
+      const uname = String(item.username || "").trim();
+      return {
+        ...item,
+        fullName: null as string | null,
+        href: uname ? `https://www.instagram.com/${uname}/` : null,
+        profilePicUrl: null as string | null,
+        isVerified: null as boolean | null,
+        reason: null as string | null,
+      };
+    });
+
+    const userId = req.authUser?.id;
+    if (userId) {
+      const sessionProfile = await InstaSessionProfileModel.findOne({
+        userId,
+        sessionId: runtime.sessionId,
+      })
+        .select("instagramUsername")
+        .lean();
+      const followedRows = enrichedResults
+        .filter((item) => item.success === true)
+        .map((item) => ({
+          userId,
+          sessionId: runtime.sessionId,
+          username: item.username,
+          fullName: item.fullName ?? null,
+          profilePicUrl: item.profilePicUrl ?? null,
+          href: item.href ?? null,
+          instagramUserId: item.userId ?? null,
+          followedByInstagramUsername: sessionProfile?.instagramUsername ?? null,
+          isPrivate: typeof item.isPrivate === "boolean" ? item.isPrivate : null,
+          isVerified: typeof item.isVerified === "boolean" ? item.isVerified : null,
+          reason: item.reason ?? null,
+          followedAt: new Date(),
+        }));
+      if (followedRows.length > 0) {
+        await FollowHistoryModel.insertMany(followedRows, { ordered: false });
+      }
+    }
+
+    res.json({ ok: true, headless, ...result, results: enrichedResults });
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    res.status(500).json({ ok: false, error: message });
+  }
+});
+
 /**
  * Body JSON: `{ "conversationTitle", "text", "dedicatedTab"?: boolean }` — título visível na inbox (igual a `listConversations`), texto da DM.
  * Requer sessão autenticada; a lib simula teclado no Web (pode levar ~15–25s).

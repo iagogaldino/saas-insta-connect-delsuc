@@ -1,9 +1,150 @@
 import axios from "axios"
 import { Loader2, Play, Users } from "lucide-react"
-import { useState, type FormEvent } from "react"
+import { useState, type FormEvent, type ReactNode } from "react"
 import { useNavigate } from "react-router-dom"
 import { useInstaConnect } from "../features/insta/use-insta-connect"
-import { postAutoFollowSuggested, type AutoFollowPrivacyFilter, type AutoFollowResponse } from "../lib/insta"
+import {
+  postAutoFollowFollowers,
+  postAutoFollowSuggested,
+  type AutoFollowFollowersResponse,
+  type AutoFollowPrivacyFilter,
+  type AutoFollowResponse,
+  type AutoFollowResultItem,
+} from "../lib/insta"
+
+type ResultPanelData = {
+  requested: number
+  followed: number
+  attempted: number
+  privacyFilter: string
+  results: AutoFollowResultItem[]
+}
+
+function AutoFollowResultsPanel({
+  result,
+  resultTab,
+  setResultTab,
+  extraSummary = null,
+}: {
+  result: ResultPanelData
+  resultTab: "followed" | "failed"
+  setResultTab: (t: "followed" | "failed") => void
+  extraSummary?: ReactNode
+}) {
+  const followedItems = result.results.filter((item) => item.success)
+  const failedItems = result.results.filter((item) => !item.success)
+  const visibleItems = resultTab === "followed" ? followedItems : failedItems
+
+  return (
+    <div className="space-y-4 rounded-xl border border-slate-200 bg-slate-50/80 p-4 text-sm text-slate-700">
+      {extraSummary}
+      <p className="text-sm text-slate-700">
+        Resultado: seguiu <strong>{result.followed}</strong> de <strong>{result.requested}</strong> solicitados
+        (tentativas: {result.attempted}, filtro: <code>{result.privacyFilter}</code>).
+      </p>
+      {result.results.length > 0 ? (
+        <div className="space-y-2">
+          <div className="flex items-center justify-between gap-2">
+            <h4 className="text-sm font-semibold text-slate-800">Pessoas processadas</h4>
+            <div className="inline-flex rounded-lg border border-slate-200 bg-slate-50 p-0.5 text-xs">
+              <button
+                type="button"
+                onClick={() => setResultTab("followed")}
+                className={`rounded-md px-2 py-1 ${
+                  resultTab === "followed" ? "bg-emerald-100 text-emerald-800" : "text-slate-600 hover:bg-slate-100"
+                }`}
+              >
+                Seguidos ({followedItems.length})
+              </button>
+              <button
+                type="button"
+                onClick={() => setResultTab("failed")}
+                className={`rounded-md px-2 py-1 ${
+                  resultTab === "failed" ? "bg-rose-100 text-rose-800" : "text-slate-600 hover:bg-slate-100"
+                }`}
+              >
+                Falhas ({failedItems.length})
+              </button>
+            </div>
+          </div>
+          <div className="space-y-2">
+            {visibleItems.length === 0 ? (
+              <p className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-500">
+                {resultTab === "followed"
+                  ? "Nenhum perfil seguido nesta execução."
+                  : "Nenhuma falha nesta execução."}
+              </p>
+            ) : null}
+            {visibleItems.map((item, idx) => {
+              const profileUrl = item.href?.startsWith("http")
+                ? item.href
+                : item.href
+                  ? `https://www.instagram.com${item.href}`
+                  : `https://www.instagram.com/${item.username}/`
+
+              return (
+                <div
+                  key={`${item.username}-${idx}`}
+                  className="flex items-start gap-3 rounded-lg border border-slate-200 bg-white p-3"
+                >
+                  {item.profilePicUrl ? (
+                    <img
+                      src={item.profilePicUrl}
+                      alt={`Foto de ${item.username}`}
+                      className="h-12 w-12 shrink-0 rounded-full object-cover"
+                    />
+                  ) : (
+                    <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-slate-200 text-xs font-semibold text-slate-600">
+                      @{item.username.slice(0, 2).toUpperCase()}
+                    </div>
+                  )}
+
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <a
+                        href={profileUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="font-semibold text-slate-900 hover:underline"
+                      >
+                        @{item.username}
+                      </a>
+                      {item.fullName ? <span className="text-slate-600">- {item.fullName}</span> : null}
+                      {item.isVerified ? (
+                        <span className="rounded bg-blue-100 px-1.5 py-0.5 text-xs text-blue-700">Verificado</span>
+                      ) : null}
+                    </div>
+                    <div className="mt-1 flex flex-wrap items-center gap-2 text-xs">
+                      <span
+                        className={`rounded px-1.5 py-0.5 ${
+                          item.success ? "bg-emerald-100 text-emerald-700" : "bg-rose-100 text-rose-700"
+                        }`}
+                      >
+                        {item.success ? "Seguido" : "Não seguido"}
+                      </span>
+                      {typeof item.isPrivate === "boolean" ? (
+                        <span className="rounded bg-slate-200 px-1.5 py-0.5 text-slate-700">
+                          {item.isPrivate ? "Privado" : "Público"}
+                        </span>
+                      ) : null}
+                      {item.userId ? (
+                        <span className="rounded bg-slate-200 px-1.5 py-0.5 text-slate-700">ID: {item.userId}</span>
+                      ) : null}
+                      {item.reason ? (
+                        <span className="rounded bg-slate-200 px-1.5 py-0.5 text-slate-700">{item.reason}</span>
+                      ) : null}
+                    </div>
+                    {item.error ? <p className="mt-1 text-xs text-rose-600">{item.error}</p> : null}
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      ) : null}
+    </div>
+  )
+}
 
 export function ActiveSessionPage() {
   const navigate = useNavigate()
@@ -15,7 +156,28 @@ export function ActiveSessionPage() {
   const [result, setResult] = useState<AutoFollowResponse | null>(null)
   const [resultTab, setResultTab] = useState<"followed" | "failed">("followed")
 
-  async function handleSubmit(e: FormEvent<HTMLFormElement>) {
+  const [ffTarget, setFfTarget] = useState("")
+  const [ffQuantity, setFfQuantity] = useState(3)
+  const [ffPrivacy, setFfPrivacy] = useState<AutoFollowPrivacyFilter>("any")
+  const [ffSubmitting, setFfSubmitting] = useState(false)
+  const [ffError, setFfError] = useState<string | null>(null)
+  const [ffResult, setFfResult] = useState<AutoFollowFollowersResponse | null>(null)
+  const [ffResultTab, setFfResultTab] = useState<"followed" | "failed">("followed")
+
+  const formBusy = isSubmitting || ffSubmitting
+  const activeSession = sessions.find((s) => s.id === activeSessionId) ?? null
+  const isSessionConnected = Boolean(activeSession?.instagramUsername)
+
+  function tryNavigateRelogin(apiError: string) {
+    const authSessionError =
+      apiError.includes("Sessao nao autenticada. Faca login antes de seguir.") ||
+      apiError.includes("Sessão não autenticada. Faça login antes de seguir.")
+    if (authSessionError && activeSessionId) {
+      void navigate(`/connect-instagram?reloginSessionId=${encodeURIComponent(activeSessionId)}`)
+    }
+  }
+
+  async function handleSubmitSuggested(e: FormEvent<HTMLFormElement>) {
     e.preventDefault()
     setError(null)
     setResult(null)
@@ -29,14 +191,7 @@ export function ActiveSessionPage() {
         const body = e.response?.data as { error?: string } | undefined
         const apiError = body?.error ?? e.message
         setError(apiError)
-        const authSessionError =
-          apiError.includes("Sessao nao autenticada. Faca login antes de seguir.") ||
-          apiError.includes("Sessão não autenticada. Faça login antes de seguir.")
-        if (authSessionError && activeSessionId) {
-          void navigate(
-            `/connect-instagram?reloginSessionId=${encodeURIComponent(activeSessionId)}`,
-          )
-        }
+        tryNavigateRelogin(apiError)
       } else {
         setError(e instanceof Error ? e.message : "Erro desconhecido.")
       }
@@ -45,11 +200,34 @@ export function ActiveSessionPage() {
     }
   }
 
-  const followedItems = result?.results.filter((item) => item.success) ?? []
-  const failedItems = result?.results.filter((item) => !item.success) ?? []
-  const visibleItems = resultTab === "followed" ? followedItems : failedItems
-  const activeSession = sessions.find((s) => s.id === activeSessionId) ?? null
-  const isSessionConnected = Boolean(activeSession?.instagramUsername)
+  async function handleSubmitFollowers(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault()
+    setFfError(null)
+    setFfResult(null)
+    setFfResultTab("followed")
+    setFfSubmitting(true)
+    const t = ffTarget.trim()
+    if (!t) {
+      setFfError("Informe o nome de usuário do perfil alvo (sem @ ou com @).")
+      setFfSubmitting(false)
+      return
+    }
+    try {
+      const { data } = await postAutoFollowFollowers(t, ffQuantity, ffPrivacy)
+      setFfResult(data)
+    } catch (e) {
+      if (axios.isAxiosError(e)) {
+        const body = e.response?.data as { error?: string } | undefined
+        const apiError = body?.error ?? e.message
+        setFfError(apiError)
+        tryNavigateRelogin(apiError)
+      } else {
+        setFfError(e instanceof Error ? e.message : "Erro desconhecido.")
+      }
+    } finally {
+      setFfSubmitting(false)
+    }
+  }
 
   if (!activeSessionId) {
     return (
@@ -124,7 +302,8 @@ export function ActiveSessionPage() {
           </div>
         </div>
 
-        <form onSubmit={handleSubmit} className="space-y-4">
+        <h4 className="mb-3 text-sm font-semibold text-slate-800">A partir de sugeridos (Explore)</h4>
+        <form onSubmit={handleSubmitSuggested} className="mb-8 space-y-4">
           <div>
             <label htmlFor="af-quantity" className="mb-1 block text-sm font-medium text-slate-700">
               Quantidade (1 a 100)
@@ -136,7 +315,7 @@ export function ActiveSessionPage() {
               max={100}
               value={quantity}
               onChange={(e) => setQuantity(Number(e.target.value))}
-              disabled={isSubmitting || !isSessionConnected}
+              disabled={formBusy || !isSessionConnected}
               className="w-full rounded-lg border border-slate-200 px-3 py-2 text-slate-900 shadow-sm focus:border-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-300 sm:w-56"
             />
           </div>
@@ -149,7 +328,7 @@ export function ActiveSessionPage() {
               id="af-filter"
               value={privacyFilter}
               onChange={(e) => setPrivacyFilter(e.target.value as AutoFollowPrivacyFilter)}
-              disabled={isSubmitting || !isSessionConnected}
+              disabled={formBusy || !isSessionConnected}
               className="w-full rounded-lg border border-slate-200 px-3 py-2 text-slate-900 shadow-sm focus:border-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-300 sm:w-56"
             >
               <option value="any">Qualquer perfil</option>
@@ -163,11 +342,86 @@ export function ActiveSessionPage() {
           <div className="flex items-center gap-2">
             <button
               type="submit"
-              disabled={isSubmitting || !isSessionConnected}
+              disabled={formBusy || !isSessionConnected}
               className="inline-flex items-center gap-2 rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-70"
             >
               {isSubmitting ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : <Play className="h-4 w-4" aria-hidden />}
-              {isSubmitting ? "Executando..." : "Iniciar AutoFollow"}
+              {isSubmitting ? "Executando..." : "Iniciar (sugeridos)"}
+            </button>
+          </div>
+
+          {result ? (
+            <AutoFollowResultsPanel
+              result={result}
+              resultTab={resultTab}
+              setResultTab={setResultTab}
+            />
+          ) : null}
+        </form>
+
+        <h4 className="mb-3 text-sm font-semibold text-slate-800">Seguidores de um perfil</h4>
+        <p className="mb-3 text-sm text-slate-500">
+          Informe o <strong>@</strong> do perfil cujos <em>seguidores</em> você quer seguir. A automação
+          abre o perfil, lê a lista de seguidores pela API web e aplica o mesmo filtro de privacidade.
+        </p>
+        <form onSubmit={handleSubmitFollowers} className="space-y-4">
+          <div>
+            <label htmlFor="ff-target" className="mb-1 block text-sm font-medium text-slate-700">
+              Perfil alvo
+            </label>
+            <input
+              id="ff-target"
+              type="text"
+              autoComplete="off"
+              placeholder="ex: nomedaconta"
+              value={ffTarget}
+              onChange={(e) => setFfTarget(e.target.value)}
+              disabled={formBusy || !isSessionConnected}
+              className="w-full rounded-lg border border-slate-200 px-3 py-2 text-slate-900 shadow-sm focus:border-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-300 sm:max-w-md"
+            />
+          </div>
+          <div>
+            <label htmlFor="ff-quantity" className="mb-1 block text-sm font-medium text-slate-700">
+              Quantidade (1 a 100)
+            </label>
+            <input
+              id="ff-quantity"
+              type="number"
+              min={1}
+              max={100}
+              value={ffQuantity}
+              onChange={(e) => setFfQuantity(Number(e.target.value))}
+              disabled={formBusy || !isSessionConnected}
+              className="w-full rounded-lg border border-slate-200 px-3 py-2 text-slate-900 shadow-sm focus:border-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-300 sm:w-56"
+            />
+          </div>
+          <div>
+            <label htmlFor="ff-filter" className="mb-1 block text-sm font-medium text-slate-700">
+              Filtro de privacidade
+            </label>
+            <select
+              id="ff-filter"
+              value={ffPrivacy}
+              onChange={(e) => setFfPrivacy(e.target.value as AutoFollowPrivacyFilter)}
+              disabled={formBusy || !isSessionConnected}
+              className="w-full rounded-lg border border-slate-200 px-3 py-2 text-slate-900 shadow-sm focus:border-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-300 sm:w-56"
+            >
+              <option value="any">Qualquer perfil</option>
+              <option value="public">Somente públicos</option>
+              <option value="private">Somente privados</option>
+            </select>
+          </div>
+
+          {ffError ? <p className="text-sm text-red-600">{ffError}</p> : null}
+
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="submit"
+              disabled={formBusy || !isSessionConnected}
+              className="inline-flex items-center gap-2 rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-70"
+            >
+              {ffSubmitting ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : <Play className="h-4 w-4" aria-hidden />}
+              {ffSubmitting ? "Executando..." : "Iniciar (seguidores do perfil)"}
             </button>
             <button
               type="button"
@@ -177,117 +431,30 @@ export function ActiveSessionPage() {
               Voltar para sessões
             </button>
           </div>
+
+          {ffResult ? (
+            <AutoFollowResultsPanel
+              result={ffResult}
+              resultTab={ffResultTab}
+              setResultTab={setFfResultTab}
+              extraSummary={
+                <p className="text-sm text-slate-600">
+                  Perfil alvo:{" "}
+                  <a
+                    className="font-semibold text-slate-900 underline"
+                    href={`https://www.instagram.com/${encodeURIComponent(ffResult.targetUsername)}/`}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    @{ffResult.targetUsername}
+                  </a>{" "}
+                  · id {ffResult.targetUserId} · abertura: <code>{ffResult.profileOpenedVia}</code>
+                </p>
+              }
+            />
+          ) : null}
         </form>
       </div>
-
-      {result ? (
-        <div className="space-y-4 rounded-xl border border-slate-200 bg-white p-4 text-sm text-slate-700 shadow-sm">
-          <p className="text-sm text-slate-700">
-            Resultado: seguiu <strong>{result.followed}</strong> de <strong>{result.requested}</strong> solicitados
-            (tentativas: {result.attempted}, filtro: <code>{result.privacyFilter}</code>).
-          </p>
-          {result.results.length > 0 ? (
-            <div className="space-y-2">
-              <div className="flex items-center justify-between gap-2">
-                <h4 className="text-sm font-semibold text-slate-800">Pessoas processadas</h4>
-                <div className="inline-flex rounded-lg border border-slate-200 bg-slate-50 p-0.5 text-xs">
-                  <button
-                    type="button"
-                    onClick={() => setResultTab("followed")}
-                    className={`rounded-md px-2 py-1 ${
-                      resultTab === "followed" ? "bg-emerald-100 text-emerald-800" : "text-slate-600 hover:bg-slate-100"
-                    }`}
-                  >
-                    Seguidos ({followedItems.length})
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setResultTab("failed")}
-                    className={`rounded-md px-2 py-1 ${
-                      resultTab === "failed" ? "bg-rose-100 text-rose-800" : "text-slate-600 hover:bg-slate-100"
-                    }`}
-                  >
-                    Falhas ({failedItems.length})
-                  </button>
-                </div>
-              </div>
-              <div className="space-y-2">
-                {visibleItems.length === 0 ? (
-                  <p className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-500">
-                    {resultTab === "followed"
-                      ? "Nenhum perfil seguido nesta execução."
-                      : "Nenhuma falha nesta execução."}
-                  </p>
-                ) : null}
-                {visibleItems.map((item, idx) => {
-                  const profileUrl = item.href?.startsWith("http")
-                    ? item.href
-                    : item.href
-                      ? `https://www.instagram.com${item.href}`
-                      : `https://www.instagram.com/${item.username}/`
-
-                  return (
-                    <div
-                      key={`${item.username}-${idx}`}
-                      className="flex items-start gap-3 rounded-lg border border-slate-200 bg-slate-50 p-3"
-                    >
-                      {item.profilePicUrl ? (
-                        <img
-                          src={item.profilePicUrl}
-                          alt={`Foto de ${item.username}`}
-                          className="h-12 w-12 shrink-0 rounded-full object-cover"
-                        />
-                      ) : (
-                        <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-slate-200 text-xs font-semibold text-slate-600">
-                          @{item.username.slice(0, 2).toUpperCase()}
-                        </div>
-                      )}
-
-                      <div className="min-w-0 flex-1">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <a
-                            href={profileUrl}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="font-semibold text-slate-900 hover:underline"
-                          >
-                            @{item.username}
-                          </a>
-                          {item.fullName ? <span className="text-slate-600">- {item.fullName}</span> : null}
-                          {item.isVerified ? (
-                            <span className="rounded bg-blue-100 px-1.5 py-0.5 text-xs text-blue-700">Verificado</span>
-                          ) : null}
-                        </div>
-                        <div className="mt-1 flex flex-wrap items-center gap-2 text-xs">
-                          <span
-                            className={`rounded px-1.5 py-0.5 ${
-                              item.success ? "bg-emerald-100 text-emerald-700" : "bg-rose-100 text-rose-700"
-                            }`}
-                          >
-                            {item.success ? "Seguido" : "Não seguido"}
-                          </span>
-                          {typeof item.isPrivate === "boolean" ? (
-                            <span className="rounded bg-slate-200 px-1.5 py-0.5 text-slate-700">
-                              {item.isPrivate ? "Privado" : "Público"}
-                            </span>
-                          ) : null}
-                          {item.userId ? (
-                            <span className="rounded bg-slate-200 px-1.5 py-0.5 text-slate-700">ID: {item.userId}</span>
-                          ) : null}
-                          {item.reason ? (
-                            <span className="rounded bg-slate-200 px-1.5 py-0.5 text-slate-700">{item.reason}</span>
-                          ) : null}
-                        </div>
-                        {item.error ? <p className="mt-1 text-xs text-rose-600">{item.error}</p> : null}
-                      </div>
-                    </div>
-                  )
-                })}
-              </div>
-            </div>
-          ) : null}
-        </div>
-      ) : null}
     </div>
   )
 }

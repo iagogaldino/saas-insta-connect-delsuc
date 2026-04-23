@@ -109,6 +109,31 @@ export async function postAutoFollowSuggested(quantity: number, privacyFilter: A
   return api.post<AutoFollowResponse>("/insta/auto-follow", { quantity, privacyFilter })
 }
 
+export type AutoFollowFollowersResponse = {
+  ok: true
+  headless: boolean
+  targetUsername: string
+  targetUserId: string
+  profileOpenedVia: "search" | "direct"
+  requested: number
+  attempted: number
+  followed: number
+  privacyFilter: AutoFollowPrivacyFilter
+  results: AutoFollowResultItem[]
+}
+
+export async function postAutoFollowFollowers(
+  targetUsername: string,
+  quantity: number,
+  privacyFilter: AutoFollowPrivacyFilter,
+) {
+  return api.post<AutoFollowFollowersResponse>("/insta/auto-follow-followers", {
+    targetUsername,
+    quantity,
+    privacyFilter,
+  })
+}
+
 export type FollowsMetricsResponse = {
   ok: true
   days: number

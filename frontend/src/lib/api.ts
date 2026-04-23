@@ -1,7 +1,6 @@
 import axios from "axios"
 import { apiBaseUrl } from "./config"
-
-const AUTH_KEY = "saas_auth"
+import { readAuthToken } from "./auth-session-storage"
 
 export const api = axios.create({
   baseURL: apiBaseUrl,
@@ -12,8 +11,9 @@ export const api = axios.create({
 })
 
 api.interceptors.request.use((config) => {
-  if (typeof sessionStorage !== "undefined" && sessionStorage.getItem(AUTH_KEY) === "1") {
-    config.headers.set("Authorization", "Bearer mock-token")
+  const token = readAuthToken()
+  if (token) {
+    config.headers.set("Authorization", `Bearer ${token}`)
   }
   return config
 })

@@ -1,9 +1,18 @@
+import "dotenv/config";
+import { randomUUID } from "node:crypto";
 import express from "express";
-import type { Response } from "express";
+import type { Request, Response } from "express";
 import { createInstaConnect, type DmTapEvent, type InstaConnect } from "insta-connect-delsuc";
+import { connectDatabase } from "./config/database";
+import { env } from "./config/env";
+import { UserModel } from "./modules/auth/user.model";
+import { FollowHistoryModel } from "./modules/insta/follow-history.model";
+import { InstaSessionProfileModel } from "./modules/insta/session-profile.model";
+import { authRoutes } from "./modules/auth/auth.routes";
+import { requireAuth } from "./modules/auth/auth.middleware";
 
 const app = express();
-const port = Number(process.env.PORT) || 3000;
+const port = env.PORT;
 
 app.use(express.json());
 
@@ -20,21 +29,170 @@ app.use((req, res, next) => {
 
 const headless = process.env.INSTA_HEADLESS === "1" || process.env.INSTA_HEADLESS === "true";
 
-let instaClient: InstaConnect | null = null;
+type InstaRuntime = {
+  sessionId: string;
+  client: InstaConnect;
+  dmTapSseClients: Set<Response>;
+  dmTapEnsurePromise: Promise<void> | null;
+};
 
-function getInstaConnect(): InstaConnect {
-  if (!instaClient) {
-    instaClient = createInstaConnect(
-      { basePath: process.cwd(), headless },
-      (launch) => ({ ...launch, slowMo: 0 }),
-    );
-  }
-  return instaClient;
+const instaRuntimes = new Map<string, InstaRuntime>();
+
+type UserSessionState = {
+  sessionIds: string[];
+  activeSessionId: string;
+};
+
+function uniqueSessionIds(items: Array<string | null | undefined>): string[] {
+  return [...new Set(items.filter((item): item is string => typeof item === "string" && item.trim().length > 0))];
 }
 
-/** Clientes conectados via SSE; cada `dmTap` da lib replicado com `event: dmtap`. */
-const dmTapSseClients = new Set<Response>();
-let dmTapEnsurePromise: Promise<void> | null = null;
+async function getOrCreateUserSessionState(userId: string): Promise<UserSessionState> {
+  const existing = await UserModel.findById(userId)
+    .select("instaSessionId instaSessionIds activeInstaSessionId")
+    .lean();
+  if (!existing) {
+    throw new Error("Authenticated user not found.");
+  }
+
+  const fromLegacy = typeof existing.instaSessionId === "string" ? existing.instaSessionId : null;
+  const fromArray = Array.isArray(existing.instaSessionIds) ? existing.instaSessionIds : [];
+  const sessionIds = uniqueSessionIds([...fromArray, fromLegacy]);
+  const activeCandidate =
+    typeof existing.activeInstaSessionId === "string" ? existing.activeInstaSessionId : null;
+
+  const generatedSessionId = sessionIds.length === 0 ? randomUUID() : null;
+  const finalSessionIds = generatedSessionId ? [generatedSessionId] : sessionIds;
+  const finalActiveSessionId =
+    activeCandidate && finalSessionIds.includes(activeCandidate) ? activeCandidate : finalSessionIds[0];
+
+  const needsSync =
+    generatedSessionId !== null ||
+    finalSessionIds.length !== fromArray.length ||
+    finalActiveSessionId !== existing.activeInstaSessionId;
+
+  if (needsSync) {
+    await UserModel.updateOne(
+      { _id: userId },
+      {
+        $set: {
+          instaSessionIds: finalSessionIds,
+          activeInstaSessionId: finalActiveSessionId,
+          instaSessionId: finalActiveSessionId,
+        },
+      },
+    );
+  }
+
+  return {
+    sessionIds: finalSessionIds,
+    activeSessionId: finalActiveSessionId,
+  };
+}
+
+async function createUserSession(userId: string, setAsActive: boolean): Promise<UserSessionState> {
+  const current = await getOrCreateUserSessionState(userId);
+  const newSessionId = randomUUID();
+  const nextSessionIds = uniqueSessionIds([...current.sessionIds, newSessionId]);
+  const nextActiveSessionId = setAsActive ? newSessionId : current.activeSessionId;
+
+  await UserModel.updateOne(
+    { _id: userId },
+    {
+      $set: {
+        instaSessionIds: nextSessionIds,
+        activeInstaSessionId: nextActiveSessionId,
+        instaSessionId: nextActiveSessionId,
+      },
+    },
+  );
+
+  return {
+    sessionIds: nextSessionIds,
+    activeSessionId: nextActiveSessionId,
+  };
+}
+
+async function setActiveUserSession(userId: string, sessionId: string): Promise<UserSessionState> {
+  const current = await getOrCreateUserSessionState(userId);
+  if (!current.sessionIds.includes(sessionId)) {
+    throw new Error("SESSION_NOT_FOUND");
+  }
+
+  await UserModel.updateOne(
+    { _id: userId },
+    {
+      $set: {
+        activeInstaSessionId: sessionId,
+        instaSessionId: sessionId,
+      },
+    },
+  );
+
+  return {
+    sessionIds: current.sessionIds,
+    activeSessionId: sessionId,
+  };
+}
+
+async function removeUserSession(userId: string, sessionId: string): Promise<UserSessionState> {
+  const current = await getOrCreateUserSessionState(userId);
+  if (!current.sessionIds.includes(sessionId)) {
+    throw new Error("SESSION_NOT_FOUND");
+  }
+
+  const remaining = current.sessionIds.filter((id) => id !== sessionId);
+  const nextSessionIds = remaining.length > 0 ? remaining : [randomUUID()];
+  const nextActiveSessionId = current.activeSessionId === sessionId ? nextSessionIds[0] : current.activeSessionId;
+
+  await UserModel.updateOne(
+    { _id: userId },
+    {
+      $set: {
+        instaSessionIds: nextSessionIds,
+        activeInstaSessionId: nextActiveSessionId,
+        instaSessionId: nextActiveSessionId,
+      },
+    },
+  );
+
+  return {
+    sessionIds: nextSessionIds,
+    activeSessionId: nextActiveSessionId,
+  };
+}
+
+async function getInstaRuntimeForRequest(req: Request): Promise<InstaRuntime> {
+  const userId = req.authUser?.id;
+  if (!userId) {
+    throw new Error("Authenticated user missing in request.");
+  }
+
+  const state = await getOrCreateUserSessionState(userId);
+  const sessionId = state.activeSessionId;
+  const existingRuntime = instaRuntimes.get(sessionId);
+  if (existingRuntime) {
+    return existingRuntime;
+  }
+
+  const runtime: InstaRuntime = {
+    sessionId,
+    client: createInstaConnect(
+      {
+        basePath: process.cwd(),
+        // Sessão dedicada por usuário, persistida em disco para próximos logins.
+        sessionDir: `.session/${sessionId}/chrome-profile`,
+        seenMessagesFile: `.session/${sessionId}/seen-message-ids.json`,
+        headless,
+      },
+      (launch) => ({ ...launch, slowMo: 0 }),
+    ),
+    dmTapSseClients: new Set<Response>(),
+    dmTapEnsurePromise: null,
+  };
+  instaRuntimes.set(sessionId, runtime);
+  return runtime;
+}
 
 function writeSse(res: Response, event: string, payload: unknown) {
   if (res.writableEnded) return;
@@ -42,40 +200,231 @@ function writeSse(res: Response, event: string, payload: unknown) {
   res.write(`data: ${JSON.stringify(payload)}\n\n`);
 }
 
-const broadcastDmTap: (evt: DmTapEvent) => void = (evt) => {
-  for (const r of dmTapSseClients) {
+function broadcastDmTap(runtime: InstaRuntime, evt: DmTapEvent) {
+  for (const r of runtime.dmTapSseClients) {
     if (r.writableEnded) {
-      dmTapSseClients.delete(r);
+      runtime.dmTapSseClients.delete(r);
       continue;
     }
     try {
       writeSse(r, "dmtap", evt);
     } catch {
-      dmTapSseClients.delete(r);
+      runtime.dmTapSseClients.delete(r);
     }
   }
-};
+}
 
-async function ensureDmTapForSse() {
-  const client = getInstaConnect();
+async function ensureDmTapForSse(runtime: InstaRuntime) {
+  const client = runtime.client;
   if (client.isDmTapActive()) return;
-  if (dmTapEnsurePromise) {
-    await dmTapEnsurePromise;
+  if (runtime.dmTapEnsurePromise) {
+    await runtime.dmTapEnsurePromise;
     return;
   }
-  dmTapEnsurePromise = (async () => {
+  runtime.dmTapEnsurePromise = (async () => {
     if (client.isDmTapActive()) return;
-    await client.startDmTap(broadcastDmTap, undefined);
+    await client.startDmTap((evt) => broadcastDmTap(runtime, evt), undefined);
   })();
   try {
-    await dmTapEnsurePromise;
+    await runtime.dmTapEnsurePromise;
   } finally {
-    dmTapEnsurePromise = null;
+    runtime.dmTapEnsurePromise = null;
   }
 }
 
 app.get("/health", (_req, res) => {
   res.status(200).json({ status: "ok" });
+});
+
+app.use("/auth", authRoutes);
+app.use("/insta", requireAuth);
+
+app.get("/insta/sessions", async (req, res) => {
+  try {
+    const userId = req.authUser?.id;
+    if (!userId) {
+      res.status(401).json({ ok: false, error: "Unauthorized." });
+      return;
+    }
+    const state = await getOrCreateUserSessionState(userId);
+    res.json({
+      ok: true,
+      activeSessionId: state.activeSessionId,
+      sessions: state.sessionIds.map((id) => ({ id, isActive: id === state.activeSessionId })),
+    });
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    res.status(500).json({ ok: false, error: message });
+  }
+});
+
+app.post("/insta/sessions", async (req, res) => {
+  try {
+    const userId = req.authUser?.id;
+    if (!userId) {
+      res.status(401).json({ ok: false, error: "Unauthorized." });
+      return;
+    }
+    const setAsActive = req.body?.setAsActive !== false;
+    const state = await createUserSession(userId, setAsActive);
+    res.status(201).json({
+      ok: true,
+      activeSessionId: state.activeSessionId,
+      sessions: state.sessionIds.map((id) => ({ id, isActive: id === state.activeSessionId })),
+    });
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    res.status(500).json({ ok: false, error: message });
+  }
+});
+
+app.patch("/insta/sessions/active", async (req, res) => {
+  try {
+    const userId = req.authUser?.id;
+    if (!userId) {
+      res.status(401).json({ ok: false, error: "Unauthorized." });
+      return;
+    }
+    const sessionId = typeof req.body?.sessionId === "string" ? req.body.sessionId.trim() : "";
+    if (!sessionId) {
+      res.status(400).json({ ok: false, error: "sessionId é obrigatório." });
+      return;
+    }
+    const state = await setActiveUserSession(userId, sessionId);
+    res.json({
+      ok: true,
+      activeSessionId: state.activeSessionId,
+      sessions: state.sessionIds.map((id) => ({ id, isActive: id === state.activeSessionId })),
+    });
+  } catch (e) {
+    if (e instanceof Error && e.message === "SESSION_NOT_FOUND") {
+      res.status(404).json({ ok: false, error: "Sessão não encontrada para este usuário." });
+      return;
+    }
+    const message = e instanceof Error ? e.message : String(e);
+    res.status(500).json({ ok: false, error: message });
+  }
+});
+
+app.delete("/insta/sessions/:sessionId", async (req, res) => {
+  try {
+    const userId = req.authUser?.id;
+    if (!userId) {
+      res.status(401).json({ ok: false, error: "Unauthorized." });
+      return;
+    }
+
+    const sessionId = typeof req.params.sessionId === "string" ? req.params.sessionId.trim() : "";
+    if (!sessionId) {
+      res.status(400).json({ ok: false, error: "sessionId é obrigatório." });
+      return;
+    }
+
+    const state = await removeUserSession(userId, sessionId);
+    await InstaSessionProfileModel.deleteOne({ userId, sessionId }).catch(() => null);
+
+    const runtime = instaRuntimes.get(sessionId);
+    if (runtime) {
+      try {
+        runtime.client.stopDmTap();
+      } catch {
+        // ignore cleanup failures
+      }
+      await runtime.client.close().catch(() => null);
+      instaRuntimes.delete(sessionId);
+    }
+
+    res.json({
+      ok: true,
+      activeSessionId: state.activeSessionId,
+      sessions: state.sessionIds.map((id) => ({ id, isActive: id === state.activeSessionId })),
+    });
+  } catch (e) {
+    if (e instanceof Error && e.message === "SESSION_NOT_FOUND") {
+      res.status(404).json({ ok: false, error: "Sessão não encontrada para este usuário." });
+      return;
+    }
+    const message = e instanceof Error ? e.message : String(e);
+    res.status(500).json({ ok: false, error: message });
+  }
+});
+
+app.get("/insta/metrics/follows", async (req, res) => {
+  try {
+    const userId = req.authUser?.id;
+    if (!userId) {
+      res.status(401).json({ ok: false, error: "Unauthorized." });
+      return;
+    }
+
+    const rawDays = typeof req.query.days === "string" ? parseInt(req.query.days, 10) : 30;
+    const days = Number.isFinite(rawDays) ? Math.min(Math.max(rawDays, 1), 365) : 30;
+    const since = new Date();
+    since.setHours(0, 0, 0, 0);
+    since.setDate(since.getDate() - (days - 1));
+
+    const [totalAllTime, totalInWindow, perDayRaw, lastFollows] = await Promise.all([
+      FollowHistoryModel.countDocuments({ userId }),
+      FollowHistoryModel.countDocuments({ userId, followedAt: { $gte: since } }),
+      FollowHistoryModel.aggregate<{
+        _id: string;
+        count: number;
+      }>([
+        { $match: { userId, followedAt: { $gte: since } } },
+        {
+          $group: {
+            _id: {
+              $dateToString: {
+                format: "%Y-%m-%d",
+                date: "$followedAt",
+              },
+            },
+            count: { $sum: 1 },
+          },
+        },
+        { $sort: { _id: 1 } },
+      ]),
+      FollowHistoryModel.find({ userId })
+        .sort({ followedAt: -1 })
+        .limit(20)
+        .lean(),
+    ]);
+
+    const dayMap = new Map(perDayRaw.map((item) => [item._id, item.count] as const));
+    const perDay: Array<{ date: string; count: number }> = [];
+    for (let i = 0; i < days; i += 1) {
+      const d = new Date(since);
+      d.setDate(since.getDate() + i);
+      const key = d.toISOString().slice(0, 10);
+      perDay.push({ date: key, count: dayMap.get(key) ?? 0 });
+    }
+
+    res.json({
+      ok: true,
+      days,
+      totals: {
+        allTime: totalAllTime,
+        inWindow: totalInWindow,
+      },
+      perDay,
+      recent: lastFollows.map((item) => ({
+        username: item.username,
+        fullName: item.fullName,
+        profilePicUrl: item.profilePicUrl,
+        href: item.href,
+        instagramUserId: item.instagramUserId,
+        followedByInstagramUsername: item.followedByInstagramUsername,
+        isPrivate: item.isPrivate,
+        isVerified: item.isVerified,
+        reason: item.reason,
+        sessionId: item.sessionId,
+        followedAt: item.followedAt,
+      })),
+    });
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    res.status(500).json({ ok: false, error: message });
+  }
 });
 
 /** Confirma que a biblioteca está resolvida (sem abrir o Chromium). */
@@ -112,7 +461,8 @@ app.post("/test/insta-connect/launch", async (_req, res) => {
  * Reutiliza a mesma instância; `INSTA_HEADLESS=1` desativa a janela do Chrome.
  */
 app.post("/insta/open-login", async (req, res) => {
-  const client = getInstaConnect();
+  const runtime = await getInstaRuntimeForRequest(req);
+  const client = runtime.client;
   const username = typeof req.body?.username === "string" ? req.body.username.trim() : "";
   const password = typeof req.body?.password === "string" ? req.body.password : "";
   const hasUser = username.length > 0;
@@ -127,6 +477,14 @@ app.post("/insta/open-login", async (req, res) => {
   try {
     if (hasUser && hasPass) {
       const result = await client.login(username, password);
+      const userId = req.authUser?.id;
+      if (userId) {
+        await InstaSessionProfileModel.updateOne(
+          { userId, sessionId: runtime.sessionId },
+          { $set: { instagramUsername: username.toLowerCase(), lastLoginAt: new Date() } },
+          { upsert: true },
+        );
+      }
       res.json({ ok: true, headless, ...result });
       return;
     }
@@ -143,7 +501,8 @@ app.post("/insta/open-login", async (req, res) => {
  * `conversationTitle` é o mesmo título visto em `listConversations` (ex.: nome da pessoa no inbox).
  */
 app.post("/insta/open-conversation", async (req, res) => {
-  const client = getInstaConnect();
+  const runtime = await getInstaRuntimeForRequest(req);
+  const client = runtime.client;
   const conversationTitle =
     typeof req.body?.conversationTitle === "string" ? req.body.conversationTitle.trim() : "";
   if (!conversationTitle) {
@@ -162,7 +521,8 @@ app.post("/insta/open-conversation", async (req, res) => {
 
 /** `GET /insta/messages?threadId=...&limit=20` — mensagens visíveis na thread (Puppeteer no DOM). */
 app.get("/insta/messages", async (req, res) => {
-  const client = getInstaConnect();
+  const runtime = await getInstaRuntimeForRequest(req);
+  const client = runtime.client;
   const raw = req.query.threadId;
   const threadId = typeof raw === "string" ? raw.trim() : "";
   if (!threadId) {
@@ -193,7 +553,8 @@ app.get("/insta/messages", async (req, res) => {
 
 /** `GET /insta/conversations?limit=20` — requer sessão autenticada (login prévio no mesmo processo). */
 app.get("/insta/conversations", async (req, res) => {
-  const client = getInstaConnect();
+  const runtime = await getInstaRuntimeForRequest(req);
+  const client = runtime.client;
   const limitParam = req.query.limit;
   let limit = 20;
   if (typeof limitParam === "string" && limitParam.length > 0) {
@@ -216,12 +577,162 @@ app.get("/insta/conversations", async (req, res) => {
   }
 });
 
+/** `GET /insta/search-users?query=...&limit=20` — busca de usuários usando rede + DOM. */
+app.get("/insta/search-users", async (req, res) => {
+  const runtime = await getInstaRuntimeForRequest(req);
+  const client = runtime.client;
+  const rawQuery = req.query.query;
+  const query = typeof rawQuery === "string" ? rawQuery.trim() : "";
+  if (!query) {
+    res.status(400).json({ ok: false, error: "Query `query` é obrigatória." });
+    return;
+  }
+
+  const limitParam = req.query.limit;
+  let limit = 20;
+  if (typeof limitParam === "string" && limitParam.length > 0) {
+    const n = parseInt(limitParam, 10);
+    if (!Number.isFinite(n) || n < 1 || n > 100) {
+      res.status(400).json({ ok: false, error: "Query `limit` deve ser um número entre 1 e 100." });
+      return;
+    }
+    limit = n;
+  } else if (Array.isArray(limitParam)) {
+    res.status(400).json({ ok: false, error: "Use um único parâmetro `limit`." });
+    return;
+  }
+
+  try {
+    const result = await client.searchUsers(query, { limit });
+    res.json({ ok: true, count: result.users.length, headless, ...result });
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    res.status(500).json({ ok: false, error: message });
+  }
+});
+
+/** `GET /insta/suggested-people?limit=20` — lista sugestões da aba Explore People. */
+app.get("/insta/suggested-people", async (req, res) => {
+  const runtime = await getInstaRuntimeForRequest(req);
+  const client = runtime.client;
+  const limitParam = req.query.limit;
+  let limit = 20;
+  if (typeof limitParam === "string" && limitParam.length > 0) {
+    const n = parseInt(limitParam, 10);
+    if (!Number.isFinite(n) || n < 1 || n > 100) {
+      res.status(400).json({ ok: false, error: "Query `limit` deve ser um número entre 1 e 100." });
+      return;
+    }
+    limit = n;
+  } else if (Array.isArray(limitParam)) {
+    res.status(400).json({ ok: false, error: "Use um único parâmetro `limit`." });
+    return;
+  }
+
+  try {
+    const result = await client.listSuggestedPeople({ limit });
+    res.json({ ok: true, count: result.users.length, headless, ...result });
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    res.status(500).json({ ok: false, error: message });
+  }
+});
+
+/** `POST /insta/auto-follow` — auto-follow de usuários sugeridos na sessão ativa. */
+app.post("/insta/auto-follow", async (req, res) => {
+  const runtime = await getInstaRuntimeForRequest(req);
+  const client = runtime.client;
+  const quantityRaw = req.body?.quantity;
+  const privacyFilterRaw = req.body?.privacyFilter;
+
+  const quantity = Number(quantityRaw);
+  if (!Number.isFinite(quantity) || quantity < 1 || quantity > 100) {
+    res.status(400).json({ ok: false, error: "`quantity` deve ser um número entre 1 e 100." });
+    return;
+  }
+
+  const privacyFilter =
+    typeof privacyFilterRaw === "string" && privacyFilterRaw.trim().length > 0
+      ? privacyFilterRaw.trim().toLowerCase()
+      : "any";
+  if (!["any", "public", "private"].includes(privacyFilter)) {
+    res.status(400).json({ ok: false, error: "`privacyFilter` deve ser `any`, `public` ou `private`." });
+    return;
+  }
+
+  try {
+    const result = await client.autoFollowSuggestedUsers(quantity, { privacyFilter });
+
+    // Enriquece os resultados com metadados visuais vindos das sugestões (quando disponíveis).
+    const suggested = await client.listSuggestedPeople({ limit: 200 }).catch(() => ({ users: [] as Array<{
+      username: string;
+      fullName: string;
+      href: string;
+      userId?: string;
+      reason?: string;
+      isVerified?: boolean;
+      isPrivate?: boolean;
+      profilePicUrl?: string;
+    }> }));
+    const byUsername = new Map(
+      suggested.users.map((u) => [String(u.username || "").toLowerCase(), u] as const),
+    );
+
+    const enrichedResults = result.results.map((item) => {
+      const meta = byUsername.get(String(item.username || "").toLowerCase());
+      return {
+        ...item,
+        fullName: meta?.fullName ?? null,
+        href: meta?.href ?? null,
+        profilePicUrl: meta?.profilePicUrl ?? null,
+        isVerified: typeof meta?.isVerified === "boolean" ? meta.isVerified : null,
+        reason: meta?.reason ?? null,
+      };
+    });
+
+    const userId = req.authUser?.id;
+    if (userId) {
+      const sessionProfile = await InstaSessionProfileModel.findOne({
+        userId,
+        sessionId: runtime.sessionId,
+      })
+        .select("instagramUsername")
+        .lean();
+      const followedRows = enrichedResults
+        .filter((item) => item.success === true)
+        .map((item) => ({
+          userId,
+          sessionId: runtime.sessionId,
+          username: item.username,
+          fullName: item.fullName ?? null,
+          profilePicUrl: item.profilePicUrl ?? null,
+          href: item.href ?? null,
+          instagramUserId: item.userId ?? null,
+          followedByInstagramUsername: sessionProfile?.instagramUsername ?? null,
+          isPrivate: typeof item.isPrivate === "boolean" ? item.isPrivate : null,
+          isVerified: typeof item.isVerified === "boolean" ? item.isVerified : null,
+          reason: item.reason ?? null,
+          followedAt: new Date(),
+        }));
+      if (followedRows.length > 0) {
+        await FollowHistoryModel.insertMany(followedRows, { ordered: false });
+      }
+    }
+
+    res.json({ ok: true, headless, ...result, results: enrichedResults });
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    res.status(500).json({ ok: false, error: message });
+  }
+});
+
 /**
  * Body JSON: `{ "conversationTitle", "text", "dedicatedTab"?: boolean }` — título visível na inbox (igual a `listConversations`), texto da DM.
  * Requer sessão autenticada; a lib simula teclado no Web (pode levar ~15–25s).
  */
 app.post("/insta/messages", async (req, res) => {
-  const client = getInstaConnect();
+  const runtime = await getInstaRuntimeForRequest(req);
+  const client = runtime.client;
   const conversationTitle =
     typeof req.body?.conversationTitle === "string" ? req.body.conversationTitle.trim() : "";
   const text = typeof req.body?.text === "string" ? req.body.text : "";
@@ -250,6 +761,7 @@ app.post("/insta/messages", async (req, res) => {
  *   es.addEventListener("dmtap", (e) => console.log(JSON.parse((e as MessageEvent).data)));`
  */
 app.get("/insta/realtime/dm", async (req, res) => {
+  const runtime = await getInstaRuntimeForRequest(req);
   const allowOrigin = process.env.CORS_ORIGIN ?? "*";
   res.setHeader("Access-Control-Allow-Origin", allowOrigin);
   res.setHeader("Vary", "Origin");
@@ -262,16 +774,16 @@ app.get("/insta/realtime/dm", async (req, res) => {
   }
 
   res.write(`: sse ok\n\n`);
-  dmTapSseClients.add(res);
+  runtime.dmTapSseClients.add(res);
 
   const remove = () => {
-    dmTapSseClients.delete(res);
+    runtime.dmTapSseClients.delete(res);
   };
   req.on("close", remove);
   res.on("close", remove);
 
   try {
-    await ensureDmTapForSse();
+    await ensureDmTapForSse(runtime);
     writeSse(res, "system", { ok: true, message: "dmTap ativo; aguardando mensagens." });
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
@@ -282,9 +794,10 @@ app.get("/insta/realtime/dm", async (req, res) => {
 });
 
 /** Desliga o dmTap (para de alimentar o SSE com novas mensagens). Conexões SSE podem permanecer abertas, mas vazias. */
-app.post("/insta/realtime/dm-tap/stop", (_req, res) => {
+app.post("/insta/realtime/dm-tap/stop", async (req, res) => {
   try {
-    getInstaConnect().stopDmTap();
+    const runtime = await getInstaRuntimeForRequest(req);
+    runtime.client.stopDmTap();
     res.json({ ok: true });
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
@@ -292,6 +805,17 @@ app.post("/insta/realtime/dm-tap/stop", (_req, res) => {
   }
 });
 
-app.listen(port, () => {
-  console.log(`Server listening on http://127.0.0.1:${port}`);
-});
+async function bootstrap() {
+  try {
+    await connectDatabase();
+    app.listen(port, () => {
+      console.log(`Server listening on http://127.0.0.1:${port}`);
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`Failed to start server: ${message}`);
+    process.exit(1);
+  }
+}
+
+void bootstrap();

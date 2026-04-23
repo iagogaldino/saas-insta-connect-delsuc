@@ -4,10 +4,11 @@ import { useNavigate } from "react-router-dom"
 import { useAuth } from "../features/auth/use-auth"
 
 export function LoginPage() {
-  const { login, isAuthenticated } = useAuth()
+  const { login, register, isAuthenticated } = useAuth()
   const navigate = useNavigate()
   const [email, setEmail] = useState("")
   const [password, setPassword] = useState("")
+  const [isRegisterMode, setIsRegisterMode] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
 
@@ -17,16 +18,16 @@ export function LoginPage() {
     }
   }, [isAuthenticated, navigate])
 
-  function handleSubmit(e: FormEvent<HTMLFormElement>) {
+  async function handleSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault()
     setError(null)
     setIsSubmitting(true)
-    const ok = login(email, password)
+    const result = isRegisterMode ? await register(email, password) : await login(email, password)
     setIsSubmitting(false)
-    if (ok) {
+    if (result.ok) {
       void navigate("/", { replace: true })
     } else {
-      setError("Preencha e-mail e senha para acessar o painel (qualquer par válido em modo demo).")
+      setError(result.error ?? "Não foi possível concluir a autenticação.")
     }
   }
 
@@ -35,7 +36,7 @@ export function LoginPage() {
       <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-8 shadow-lg">
         <h1 className="text-center text-2xl font-bold text-slate-900">InstagramConnect</h1>
         <p className="mt-1 text-center text-sm text-slate-500">
-          <strong>Login do painel</strong>
+          <strong>{isRegisterMode ? "Criar conta no painel" : "Login do painel"}</strong>
         </p>
         <form onSubmit={handleSubmit} className="mt-8 space-y-4">
           <div>
@@ -77,14 +78,22 @@ export function LoginPage() {
             ) : (
               <LogIn className="h-4 w-4" aria-hidden />
             )}
-            {isSubmitting ? "Entrando…" : "Entrar no painel"}
+            {isSubmitting ? "Processando…" : isRegisterMode ? "Criar conta" : "Entrar no painel"}
           </button>
         </form>
-        <p className="mt-4 text-center text-xs text-slate-400">
-          Ex.: <code className="rounded bg-slate-100 px-1">demo@local</code> /{" "}
-          <code className="rounded bg-slate-100 px-1">demo</code> — conectar ao Instagram: menu{" "}
-          <strong>Instagram</strong> após o login.
-        </p>
+        <div className="mt-4 flex items-center justify-center gap-2 text-sm text-slate-500">
+          <span>{isRegisterMode ? "Já tem conta?" : "Ainda não tem conta?"}</span>
+          <button
+            type="button"
+            onClick={() => {
+              setIsRegisterMode((prev) => !prev)
+              setError(null)
+            }}
+            className="font-medium text-slate-900 underline underline-offset-2"
+          >
+            {isRegisterMode ? "Entrar" : "Criar conta"}
+          </button>
+        </div>
       </div>
     </div>
   )

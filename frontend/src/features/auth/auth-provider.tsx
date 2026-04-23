@@ -1,35 +1,65 @@
+import axios from "axios"
 import { useCallback, useMemo, useState, type ReactNode } from "react"
+import { postAuthLogin, postAuthRegister } from "../../lib/auth"
+import { clearAuthSession, readAuthEmail, readAuthToken, writeAuthSession } from "../../lib/auth-session-storage"
 import { AuthContext } from "./auth-context"
-import type { AuthValue } from "./auth-types"
-
-const AUTH_KEY = "saas_auth"
-
-function readSession(): boolean {
-  try {
-    return sessionStorage.getItem(AUTH_KEY) === "1"
-  } catch {
-    return false
-  }
-}
+import type { AuthActionResult, AuthValue } from "./auth-types"
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [isAuthenticated, setIsAuthenticated] = useState(() => readSession())
+  const [isAuthenticated, setIsAuthenticated] = useState(() => Boolean(readAuthToken()))
+  const [userEmail, setUserEmail] = useState<string | null>(() => readAuthEmail())
 
-  const login = useCallback((email: string, password: string) => {
-    if (!email.trim() || !password) return false
-    sessionStorage.setItem(AUTH_KEY, "1")
+  const persistSession = useCallback((token: string, email: string) => {
+    writeAuthSession(token, email)
     setIsAuthenticated(true)
-    return true
+    setUserEmail(email)
   }, [])
 
+  const login = useCallback(async (email: string, password: string): Promise<AuthActionResult> => {
+    const normalizedEmail = email.trim()
+    if (!normalizedEmail || !password) {
+      return { ok: false, error: "Preencha e-mail e senha." }
+    }
+    try {
+      const { data } = await postAuthLogin({ email: normalizedEmail, password })
+      persistSession(data.token, data.user.email)
+      return { ok: true }
+    } catch (error) {
+      if (axios.isAxiosError(error)) {
+        const response = error.response?.data as { error?: string } | undefined
+        return { ok: false, error: response?.error ?? "Falha ao autenticar." }
+      }
+      return { ok: false, error: error instanceof Error ? error.message : "Erro inesperado." }
+    }
+  }, [persistSession])
+
+  const register = useCallback(async (email: string, password: string): Promise<AuthActionResult> => {
+    const normalizedEmail = email.trim()
+    if (!normalizedEmail || !password) {
+      return { ok: false, error: "Preencha e-mail e senha." }
+    }
+    try {
+      const { data } = await postAuthRegister({ email: normalizedEmail, password })
+      persistSession(data.token, data.user.email)
+      return { ok: true }
+    } catch (error) {
+      if (axios.isAxiosError(error)) {
+        const response = error.response?.data as { error?: string } | undefined
+        return { ok: false, error: response?.error ?? "Falha ao criar conta." }
+      }
+      return { ok: false, error: error instanceof Error ? error.message : "Erro inesperado." }
+    }
+  }, [persistSession])
+
   const logout = useCallback(() => {
-    sessionStorage.removeItem(AUTH_KEY)
+    clearAuthSession()
     setIsAuthenticated(false)
+    setUserEmail(null)
   }, [])
 
   const value = useMemo<AuthValue>(
-    () => ({ isAuthenticated, login, logout }),
-    [isAuthenticated, login, logout],
+    () => ({ isAuthenticated, userEmail, login, register, logout }),
+    [isAuthenticated, userEmail, login, register, logout],
   )
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>

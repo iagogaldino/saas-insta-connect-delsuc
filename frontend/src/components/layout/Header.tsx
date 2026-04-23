@@ -6,6 +6,7 @@ import { useInstaConnect } from "../../features/insta/use-insta-connect"
 const titles: Record<string, string> = {
   "/": "Visão geral",
   "/connect-instagram": "Instagram",
+  "/instagram/session-active": "Sessão ativa",
   "/conversas": "Conversas",
 }
 
@@ -17,7 +18,7 @@ function titleFromPath(pathname: string) {
 }
 
 export function Header() {
-  const { logout } = useAuth()
+  const { logout, userEmail } = useAuth()
   const { disconnectInstagram } = useInstaConnect()
   const navigate = useNavigate()
   const { pathname } = useLocation()
@@ -28,7 +29,7 @@ export function Header() {
         <span className="flex h-9 w-9 items-center justify-center rounded-full bg-slate-200 text-slate-600">
           <User className="h-4 w-4" aria-hidden />
         </span>
-        <span className="text-sm text-slate-500">Sessão do painel</span>
+        <span className="text-sm text-slate-500">{userEmail ?? "Sessão do painel"}</span>
         <button
           type="button"
           onClick={() => {

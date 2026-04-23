@@ -1,6 +1,12 @@
+export type AuthActionResult = {
+  ok: boolean
+  error?: string
+}
+
 export type AuthValue = {
   isAuthenticated: boolean
-  /** Acesso ao painel (SAAS) — independente do Instagram */
-  login: (email: string, password: string) => boolean
+  userEmail: string | null
+  login: (email: string, password: string) => Promise<AuthActionResult>
+  register: (email: string, password: string) => Promise<AuthActionResult>
   logout: () => void
 }

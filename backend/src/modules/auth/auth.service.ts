@@ -14,14 +14,22 @@ type AuthResponse = {
   user: AuthPayload;
 };
 
-function signAccessToken(payload: AuthPayload): string {
+function signToken(payload: AuthPayload, expiresIn: SignOptions["expiresIn"]): string {
   const signOptions: SignOptions = {
-    expiresIn: env.JWT_ACCESS_EXPIRES_IN as SignOptions["expiresIn"],
+    expiresIn,
     subject: payload.id,
   };
   return jwt.sign(payload, env.JWT_ACCESS_SECRET, {
     ...signOptions,
   });
+}
+
+function signAccessToken(payload: AuthPayload): string {
+  return signToken(payload, env.JWT_ACCESS_EXPIRES_IN as SignOptions["expiresIn"]);
+}
+
+export function signIntegrationToken(payload: AuthPayload): string {
+  return signToken(payload, env.JWT_INTEGRATION_EXPIRES_IN as SignOptions["expiresIn"]);
 }
 
 export async function registerWithEmailAndPassword(email: string, password: string): Promise<AuthResponse> {
@@ -70,6 +78,23 @@ export async function loginWithEmailAndPassword(email: string, password: string)
 
   return {
     token: signAccessToken(payload),
+    user: payload,
+  };
+}
+
+export async function createIntegrationTokenForUser(userId: string): Promise<AuthResponse> {
+  const user = await UserModel.findById(userId).select("email").lean();
+  if (!user) {
+    const error = new Error("Authenticated user not found");
+    error.name = "AUTH_USER_NOT_FOUND";
+    throw error;
+  }
+  const payload: AuthPayload = {
+    id: String(userId),
+    email: user.email,
+  };
+  return {
+    token: signIntegrationToken(payload),
     user: payload,
   };
 }

@@ -1,6 +1,12 @@
 import { Router } from "express";
 import { z } from "zod";
-import { loginWithEmailAndPassword, registerWithEmailAndPassword } from "./auth.service";
+import { env } from "../../config/env";
+import { requireAuth } from "./auth.middleware";
+import {
+  createIntegrationTokenForUser,
+  loginWithEmailAndPassword,
+  registerWithEmailAndPassword,
+} from "./auth.service";
 
 const authBodySchema = z.object({
   email: z.string().email(),
@@ -52,6 +58,29 @@ authRoutes.post("/login", async (req, res) => {
   } catch (error) {
     if (error instanceof Error && error.name === "INVALID_CREDENTIALS") {
       res.status(401).json({ ok: false, error: "Invalid credentials." });
+      return;
+    }
+    res.status(500).json({ ok: false, error: "Internal server error." });
+  }
+});
+
+authRoutes.post("/integration-token", requireAuth, async (req, res) => {
+  try {
+    const authUserId = req.authUser?.id;
+    if (!authUserId) {
+      res.status(401).json({ ok: false, error: "Unauthorized." });
+      return;
+    }
+    const result = await createIntegrationTokenForUser(authUserId);
+    res.status(200).json({
+      ok: true,
+      ...result,
+      tokenType: "integration",
+      expiresIn: env.JWT_INTEGRATION_EXPIRES_IN,
+    });
+  } catch (error) {
+    if (error instanceof Error && error.name === "AUTH_USER_NOT_FOUND") {
+      res.status(404).json({ ok: false, error: "Authenticated user not found." });
       return;
     }
     res.status(500).json({ ok: false, error: "Internal server error." });

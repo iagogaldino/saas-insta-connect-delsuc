@@ -35,7 +35,7 @@ export function ChatPage() {
   const threadId = rawThreadId ? decodeURIComponent(rawThreadId) : ""
   const conversationTitle = titleFromQueryOrState(searchParams, titleFromState)
 
-  const { isLinked, activeSessionId, sessions } = useInstaConnect()
+  const { activeSessionId, sessions } = useInstaConnect()
   const activeSession = sessions.find((s) => s.id === activeSessionId) ?? null
   const isSessionConnected = Boolean(activeSession?.instagramUsername)
   const queryClient = useQueryClient()
@@ -64,7 +64,7 @@ export function ChatPage() {
         throw e
       }
     },
-    enabled: isLinked && isSessionConnected && threadId.length > 0,
+    enabled: isSessionConnected && threadId.length > 0,
   })
 
   const sendMutation = useMutation({
@@ -74,7 +74,6 @@ export function ChatPage() {
       }
       const { data } = await postSendMessage(conversationTitle, body, false)
       if (!data.ok) throw new Error("Envio rejeitado")
-      if (!data.success) throw new Error("O Instagram não confirmou o envio.")
       return data
     },
     onSuccess: () => {
@@ -84,7 +83,7 @@ export function ChatPage() {
   })
 
   useEffect(() => {
-    if (!isLinked || !isSessionConnected || !threadId || !conversationTitle.trim() || openRan.current) return
+    if (!isSessionConnected || !threadId || !conversationTitle.trim() || openRan.current) return
     openRan.current = true
     void (async () => {
       try {
@@ -94,7 +93,7 @@ export function ChatPage() {
         void refetch()
       }
     })()
-  }, [isLinked, isSessionConnected, threadId, conversationTitle, refetch])
+  }, [isSessionConnected, threadId, conversationTitle, refetch])
 
   const errText = isError && error instanceof Error ? error.message : null
 
@@ -106,7 +105,7 @@ export function ChatPage() {
     sendMutation.mutate(t)
   }
 
-  if (!isLinked || !isSessionConnected) {
+  if (!isSessionConnected) {
     return (
       <div className="mx-auto max-w-lg rounded-xl border border-amber-200 bg-amber-50 p-6 text-center text-sm text-amber-900">
         Conecte o Instagram na sessão ativa no menu <strong>Instagram</strong> para abrir o chat.

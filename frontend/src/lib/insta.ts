@@ -44,6 +44,11 @@ export type InstaSessionItem = {
   instagramUsername: string | null
   instagramFullName: string | null
   instagramProfilePicUrl: string | null
+  incomingWebhookUrl?: string | null
+  incomingWebhookEnabled?: boolean
+  incomingWebhookLastStatus?: "ok" | "error" | null
+  incomingWebhookLastError?: string | null
+  incomingWebhookLastSentAt?: string | null
 }
 
 export type InstaSessionsResponse = {
@@ -77,6 +82,22 @@ export async function postStartInstaSessionRuntime(sessionId: string) {
 
 export async function postStopInstaSessionRuntime(sessionId: string) {
   return api.post<InstaSessionsResponse>(`/insta/sessions/${encodeURIComponent(sessionId)}/runtime/stop`)
+}
+
+export type UpdateIncomingWebhookPayload = {
+  incomingWebhookUrl: string
+  incomingWebhookEnabled: boolean
+}
+
+export async function putInstaIncomingWebhookConfig(
+  sessionId: string,
+  payload: UpdateIncomingWebhookPayload,
+) {
+  return api.put<InstaSessionsResponse>(`/insta/sessions/${encodeURIComponent(sessionId)}/incoming-webhook`, payload)
+}
+
+export async function postInstaIncomingWebhookTest(sessionId: string) {
+  return api.post<InstaSessionsResponse>(`/insta/sessions/${encodeURIComponent(sessionId)}/incoming-webhook/test`)
 }
 
 export type AutoFollowPrivacyFilter = "any" | "public" | "private"
@@ -134,6 +155,21 @@ export async function postAutoFollowFollowers(
   })
 }
 
+export type InstaPreviewProfileResponse = {
+  ok: true
+  found: boolean
+  username: string
+  fullName: string | null
+  profilePicUrl: string | null
+  profileUrl: string
+}
+
+export async function getInstaPreviewProfile(username: string) {
+  return api.get<InstaPreviewProfileResponse>("/insta/preview-profile", {
+    params: { username },
+  })
+}
+
 export type FollowsMetricsResponse = {
   ok: true
   days: number
@@ -174,7 +210,6 @@ export type ConversationsListResponse = {
   ok: true
   count: number
   limit: number
-  headless: boolean
   conversations: ConversationItem[]
 }
 
@@ -191,10 +226,7 @@ export function threadIdFromHref(href: string): string | null {
 
 export type OpenConversationResponse = {
   ok: true
-  headless: boolean
-  success: boolean
   conversationTitle: string
-  url: string
 }
 
 export async function postOpenConversation(conversationTitle: string, dedicatedTab = false) {
@@ -212,11 +244,9 @@ export type MessageRow = {
 
 export type ThreadMessagesResponse = {
   ok: true
-  headless: boolean
   threadId: string
   count: number
   messages: MessageRow[]
-  url: string
 }
 
 export async function getThreadMessages(threadId: string, limit = 30) {
@@ -227,11 +257,8 @@ export async function getThreadMessages(threadId: string, limit = 30) {
 
 export type SendMessageResponse = {
   ok: true
-  headless: boolean
-  success: boolean
   conversationTitle: string
   text: string
-  url: string
 }
 
 export async function postSendMessage(conversationTitle: string, text: string, dedicatedTab = false) {

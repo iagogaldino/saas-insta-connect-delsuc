@@ -1,15 +1,19 @@
 import axios from "axios"
 import { Loader2, Play, Users } from "lucide-react"
-import { useState, type FormEvent, type ReactNode } from "react"
+import { useEffect, useState, type FormEvent, type ReactNode } from "react"
 import { useNavigate } from "react-router-dom"
 import { useInstaConnect } from "../features/insta/use-insta-connect"
 import {
+  getInstaPreviewProfile,
+  postInstaIncomingWebhookTest,
   postAutoFollowFollowers,
   postAutoFollowSuggested,
+  putInstaIncomingWebhookConfig,
   type AutoFollowFollowersResponse,
   type AutoFollowPrivacyFilter,
   type AutoFollowResponse,
   type AutoFollowResultItem,
+  type InstaPreviewProfileResponse,
 } from "../lib/insta"
 
 type ResultPanelData = {
@@ -148,7 +152,7 @@ function AutoFollowResultsPanel({
 
 export function ActiveSessionPage() {
   const navigate = useNavigate()
-  const { activeSessionId, sessions } = useInstaConnect()
+  const { activeSessionId, sessions, refreshSessions } = useInstaConnect()
   const [quantity, setQuantity] = useState(3)
   const [privacyFilter, setPrivacyFilter] = useState<AutoFollowPrivacyFilter>("any")
   const [isSubmitting, setIsSubmitting] = useState(false)
@@ -163,10 +167,50 @@ export function ActiveSessionPage() {
   const [ffError, setFfError] = useState<string | null>(null)
   const [ffResult, setFfResult] = useState<AutoFollowFollowersResponse | null>(null)
   const [ffResultTab, setFfResultTab] = useState<"followed" | "failed">("followed")
+  const [ffPreview, setFfPreview] = useState<InstaPreviewProfileResponse | null>(null)
+  const [ffPreviewLoading, setFfPreviewLoading] = useState(false)
+  const [ffPreviewError, setFfPreviewError] = useState<string | null>(null)
+  /** Após a verificação em Iniciar: mostra prévia e exige "Confirmar e seguir" para rodar a automação. */
+  const [ffAwaitingConfirm, setFfAwaitingConfirm] = useState(false)
+  const [incomingWebhookUrlInput, setIncomingWebhookUrlInput] = useState("")
+  const [incomingWebhookEnabledInput, setIncomingWebhookEnabledInput] = useState(false)
+  const [incomingWebhookSaving, setIncomingWebhookSaving] = useState(false)
+  const [incomingWebhookTesting, setIncomingWebhookTesting] = useState(false)
+  const [incomingWebhookMessage, setIncomingWebhookMessage] = useState<string | null>(null)
+  const [incomingWebhookError, setIncomingWebhookError] = useState<string | null>(null)
+  const [showWebhookPayloadPreview, setShowWebhookPayloadPreview] = useState(false)
 
-  const formBusy = isSubmitting || ffSubmitting
+  const formBusy = isSubmitting || ffSubmitting || ffPreviewLoading || incomingWebhookSaving || incomingWebhookTesting
   const activeSession = sessions.find((s) => s.id === activeSessionId) ?? null
   const isSessionConnected = Boolean(activeSession?.instagramUsername)
+  const incomingWebhookStatus = activeSession?.incomingWebhookLastStatus ?? null
+  const incomingWebhookLastError = activeSession?.incomingWebhookLastError ?? null
+  const incomingWebhookLastSentAt = activeSession?.incomingWebhookLastSentAt ?? null
+  const incomingWebhookPayloadPreview = JSON.stringify(
+    {
+      event: "instagram.dm.received",
+      sessionId: activeSessionId,
+      instagramUsername: activeSession?.instagramUsername ?? null,
+      threadId: "340282366841710300949128157598514677385",
+      messageText: "Oi, tudo bem?",
+      senderUsername: "cliente_teste",
+      receivedAt: new Date().toISOString(),
+      raw: {
+        text: "Oi, tudo bem?",
+        threadId: "340282366841710300949128157598514677385",
+        senderUsername: "cliente_teste",
+      },
+    },
+    null,
+    2,
+  )
+
+  useEffect(() => {
+    setIncomingWebhookUrlInput(activeSession?.incomingWebhookUrl ?? "")
+    setIncomingWebhookEnabledInput(Boolean(activeSession?.incomingWebhookEnabled))
+    setIncomingWebhookMessage(null)
+    setIncomingWebhookError(null)
+  }, [activeSessionId, activeSession?.incomingWebhookUrl, activeSession?.incomingWebhookEnabled])
 
   function tryNavigateRelogin(apiError: string) {
     const authSessionError =
@@ -174,6 +218,65 @@ export function ActiveSessionPage() {
       apiError.includes("Sessão não autenticada. Faça login antes de seguir.")
     if (authSessionError && activeSessionId) {
       void navigate(`/connect-instagram?reloginSessionId=${encodeURIComponent(activeSessionId)}`)
+    }
+  }
+
+  function isHttpUrl(value: string): boolean {
+    try {
+      const parsed = new URL(value)
+      return parsed.protocol === "http:" || parsed.protocol === "https:"
+    } catch {
+      return false
+    }
+  }
+
+  async function handleSaveIncomingWebhook() {
+    if (!activeSessionId) return
+    setIncomingWebhookMessage(null)
+    setIncomingWebhookError(null)
+    const url = incomingWebhookUrlInput.trim()
+    if (url && !isHttpUrl(url)) {
+      setIncomingWebhookError("Informe uma URL válida com http:// ou https://.")
+      return
+    }
+    setIncomingWebhookSaving(true)
+    try {
+      await putInstaIncomingWebhookConfig(activeSessionId, {
+        incomingWebhookUrl: url,
+        incomingWebhookEnabled: incomingWebhookEnabledInput,
+      })
+      await refreshSessions()
+      setIncomingWebhookMessage("Webhook salvo com sucesso.")
+    } catch (e) {
+      if (axios.isAxiosError(e)) {
+        const body = e.response?.data as { error?: string } | undefined
+        setIncomingWebhookError(body?.error ?? e.message)
+      } else {
+        setIncomingWebhookError(e instanceof Error ? e.message : "Erro desconhecido.")
+      }
+    } finally {
+      setIncomingWebhookSaving(false)
+    }
+  }
+
+  async function handleTestIncomingWebhook() {
+    if (!activeSessionId) return
+    setIncomingWebhookMessage(null)
+    setIncomingWebhookError(null)
+    setIncomingWebhookTesting(true)
+    try {
+      await postInstaIncomingWebhookTest(activeSessionId)
+      await refreshSessions()
+      setIncomingWebhookMessage("Teste enviado para o webhook configurado.")
+    } catch (e) {
+      if (axios.isAxiosError(e)) {
+        const body = e.response?.data as { error?: string } | undefined
+        setIncomingWebhookError(body?.error ?? e.message)
+      } else {
+        setIncomingWebhookError(e instanceof Error ? e.message : "Erro desconhecido.")
+      }
+    } finally {
+      setIncomingWebhookTesting(false)
     }
   }
 
@@ -200,8 +303,52 @@ export function ActiveSessionPage() {
     }
   }
 
+  function resetFollowersConfirmState() {
+    setFfPreview(null)
+    setFfPreviewError(null)
+    setFfAwaitingConfirm(false)
+  }
+
   async function handleSubmitFollowers(e: FormEvent<HTMLFormElement>) {
     e.preventDefault()
+    if (ffAwaitingConfirm) {
+      void runFollowersAfterPreviewConfirm()
+      return
+    }
+
+    setFfError(null)
+    setFfResult(null)
+    setFfResultTab("followed")
+    const t = ffTarget.replace(/^@+/, "").trim()
+    if (!t) {
+      setFfError("Informe o nome de usuário do perfil alvo (sem @ ou com @).")
+      return
+    }
+    setFfPreviewError(null)
+    setFfPreviewLoading(true)
+    setFfAwaitingConfirm(false)
+    try {
+      const { data } = await getInstaPreviewProfile(t)
+      setFfPreview(data)
+      if (data.found) {
+        setFfAwaitingConfirm(true)
+      } else {
+        setFfError(null)
+      }
+    } catch (e) {
+      setFfPreview(null)
+      if (axios.isAxiosError(e)) {
+        const body = e.response?.data as { error?: string } | undefined
+        setFfPreviewError(body?.error ?? e.message)
+      } else {
+        setFfPreviewError(e instanceof Error ? e.message : "Não foi possível verificar o perfil.")
+      }
+    } finally {
+      setFfPreviewLoading(false)
+    }
+  }
+
+  async function runFollowersAfterPreviewConfirm() {
     setFfError(null)
     setFfResult(null)
     setFfResultTab("followed")
@@ -215,6 +362,8 @@ export function ActiveSessionPage() {
     try {
       const { data } = await postAutoFollowFollowers(t, ffQuantity, ffPrivacy)
       setFfResult(data)
+      setFfAwaitingConfirm(false)
+      setFfPreview(null)
     } catch (e) {
       if (axios.isAxiosError(e)) {
         const body = e.response?.data as { error?: string } | undefined
@@ -268,6 +417,85 @@ export function ActiveSessionPage() {
         >
           Abrir conversas da sessão
         </button>
+      </div>
+
+      <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+        <div className="mb-4 flex items-center gap-2 text-slate-800">
+          <Users className="h-5 w-5" aria-hidden />
+          <h3 className="text-base font-semibold">Webhook de mensagens recebidas</h3>
+        </div>
+        <p className="mb-4 text-sm text-slate-500">
+          Quando ativo, cada nova mensagem recebida nesta sessão será enviada por POST para a URL informada.
+        </p>
+        <div className="space-y-4">
+          <div>
+            <label htmlFor="incoming-webhook-url" className="mb-1 block text-sm font-medium text-slate-700">
+              URL do webhook
+            </label>
+            <input
+              id="incoming-webhook-url"
+              type="url"
+              placeholder="https://seu-servico.com/webhook"
+              value={incomingWebhookUrlInput}
+              onChange={(e) => setIncomingWebhookUrlInput(e.target.value)}
+              disabled={!isSessionConnected || formBusy}
+              className="w-full rounded-lg border border-slate-200 px-3 py-2 text-slate-900 shadow-sm focus:border-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-300"
+            />
+          </div>
+          <label className="inline-flex items-center gap-2 text-sm text-slate-700">
+            <input
+              type="checkbox"
+              checked={incomingWebhookEnabledInput}
+              onChange={(e) => setIncomingWebhookEnabledInput(e.target.checked)}
+              disabled={!isSessionConnected || formBusy}
+            />
+            Ativar webhook para mensagens recebidas
+          </label>
+
+          {incomingWebhookStatus ? (
+            <p className="text-xs text-slate-500">
+              Último envio: <strong>{incomingWebhookStatus === "ok" ? "sucesso" : "erro"}</strong>
+              {incomingWebhookLastSentAt ? ` em ${new Date(incomingWebhookLastSentAt).toLocaleString()}` : ""}
+            </p>
+          ) : null}
+          {incomingWebhookLastError ? (
+            <p className="text-xs text-rose-600">Último erro: {incomingWebhookLastError}</p>
+          ) : null}
+          {incomingWebhookMessage ? <p className="text-sm text-emerald-700">{incomingWebhookMessage}</p> : null}
+          {incomingWebhookError ? <p className="text-sm text-rose-600">{incomingWebhookError}</p> : null}
+
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => void handleSaveIncomingWebhook()}
+              disabled={!isSessionConnected || formBusy}
+              className="inline-flex items-center gap-2 rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-70"
+            >
+              {incomingWebhookSaving ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : null}
+              {incomingWebhookSaving ? "Salvando..." : "Salvar webhook"}
+            </button>
+            <button
+              type="button"
+              onClick={() => void handleTestIncomingWebhook()}
+              disabled={!isSessionConnected || formBusy || !activeSession?.incomingWebhookEnabled}
+              className="rounded-lg border border-slate-200 px-4 py-2 text-sm text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {incomingWebhookTesting ? "Enviando teste..." : "Enviar teste"}
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowWebhookPayloadPreview((v) => !v)}
+              className="rounded-lg border border-slate-200 px-4 py-2 text-sm text-slate-700 hover:bg-slate-50"
+            >
+              {showWebhookPayloadPreview ? "Ocultar payload" : "Ver payload do POST"}
+            </button>
+          </div>
+          {showWebhookPayloadPreview ? (
+            <pre className="overflow-auto rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-700">
+              {incomingWebhookPayloadPreview}
+            </pre>
+          ) : null}
+        </div>
       </div>
 
       <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
@@ -361,8 +589,10 @@ export function ActiveSessionPage() {
 
         <h4 className="mb-3 text-sm font-semibold text-slate-800">Seguidores de um perfil</h4>
         <p className="mb-3 text-sm text-slate-500">
-          Informe o <strong>@</strong> do perfil cujos <em>seguidores</em> você quer seguir. A automação
-          abre o perfil, lê a lista de seguidores pela API web e aplica o mesmo filtro de privacidade.
+          Informe o <strong>@</strong> do perfil cujos <em>seguidores</em> você quer seguir. Ao clicar em{" "}
+          <em>Iniciar</em>, o app verifica se o perfil existe; se achar, mostra foto e nome e libera
+          o botão para confirmar. A automação lê a lista de seguidores e aplica o filtro de privacidade
+          abaixo.
         </p>
         <form onSubmit={handleSubmitFollowers} className="space-y-4">
           <div>
@@ -375,10 +605,66 @@ export function ActiveSessionPage() {
               autoComplete="off"
               placeholder="ex: nomedaconta"
               value={ffTarget}
-              onChange={(e) => setFfTarget(e.target.value)}
+              onChange={(e) => {
+                setFfTarget(e.target.value)
+                resetFollowersConfirmState()
+              }}
               disabled={formBusy || !isSessionConnected}
               className="w-full rounded-lg border border-slate-200 px-3 py-2 text-slate-900 shadow-sm focus:border-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-300 sm:max-w-md"
             />
+            {ffPreviewError ? <p className="mt-2 text-sm text-rose-600">{ffPreviewError}</p> : null}
+            {ffPreview && ffPreview.found ? (
+              <div
+                className={`mt-3 flex max-w-md gap-3 rounded-lg border p-3 text-sm text-slate-800 ${
+                  ffAwaitingConfirm
+                    ? "border-slate-900/15 bg-slate-50/90 ring-1 ring-slate-900/10"
+                    : "border-emerald-200 bg-emerald-50/60"
+                }`}
+              >
+                {ffPreview.profilePicUrl ? (
+                  <img
+                    src={ffPreview.profilePicUrl}
+                    alt=""
+                    className="h-16 w-16 shrink-0 rounded-full object-cover ring-2 ring-white shadow-sm"
+                    referrerPolicy="no-referrer"
+                  />
+                ) : (
+                  <div
+                    className="flex h-16 w-16 shrink-0 items-center justify-center rounded-full bg-slate-200 text-lg font-semibold text-slate-600 ring-2 ring-white"
+                    aria-hidden
+                  >
+                    @{ffPreview.username.slice(0, 2).toUpperCase()}
+                  </div>
+                )}
+                <div className="min-w-0">
+                  <p className="font-semibold text-slate-900">
+                    <a
+                      href={ffPreview.profileUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="hover:underline"
+                    >
+                      @{ffPreview.username}
+                    </a>
+                  </p>
+                  {ffPreview.fullName ? (
+                    <p className="text-slate-600">{ffPreview.fullName}</p>
+                  ) : null}
+                  {ffAwaitingConfirm ? (
+                    <p className="mt-1 text-xs text-slate-500">
+                      Se for a conta certa, clique em «Confirmar e seguir seguidores» abaixo.
+                    </p>
+                  ) : null}
+                </div>
+              </div>
+            ) : null}
+            {ffPreview && !ffPreview.found ? (
+              <p className="mt-2 text-sm text-amber-800">
+                Não foi possível localizar este perfil na verificação. Confira o @ e tente de novo. Se
+                tiver certeza que o @ existe, a API do Instagram pode ter bloqueado a prévia — nesse
+                caso não há o botão de confirmação.
+              </p>
+            ) : null}
           </div>
           <div>
             <label htmlFor="ff-quantity" className="mb-1 block text-sm font-medium text-slate-700">
@@ -415,14 +701,38 @@ export function ActiveSessionPage() {
           {ffError ? <p className="text-sm text-red-600">{ffError}</p> : null}
 
           <div className="flex flex-wrap items-center gap-2">
-            <button
-              type="submit"
-              disabled={formBusy || !isSessionConnected}
-              className="inline-flex items-center gap-2 rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-70"
-            >
-              {ffSubmitting ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : <Play className="h-4 w-4" aria-hidden />}
-              {ffSubmitting ? "Executando..." : "Iniciar (seguidores do perfil)"}
-            </button>
+            {ffAwaitingConfirm ? (
+              <>
+                <button
+                  type="button"
+                  onClick={() => void runFollowersAfterPreviewConfirm()}
+                  disabled={ffSubmitting || !isSessionConnected}
+                  className={`inline-flex items-center gap-2 rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-70 disabled:shadow-none ${
+                    ffSubmitting ? "" : "ff-confirm-blink"
+                  }`}
+                >
+                  {ffSubmitting ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : <Play className="h-4 w-4" aria-hidden />}
+                  {ffSubmitting ? "Executando…" : "Confirmar e seguir seguidores"}
+                </button>
+                <button
+                  type="button"
+                  onClick={resetFollowersConfirmState}
+                  disabled={ffSubmitting}
+                  className="rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm text-slate-800 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  Ajustar @
+                </button>
+              </>
+            ) : (
+              <button
+                type="submit"
+                disabled={formBusy || !isSessionConnected}
+                className="inline-flex items-center gap-2 rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-70"
+              >
+                {ffPreviewLoading ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : <Play className="h-4 w-4" aria-hidden />}
+                {ffPreviewLoading ? "Verificando perfil…" : "Iniciar (seguidores do perfil)"}
+              </button>
+            )}
             <button
               type="button"
               onClick={() => void navigate("/connect-instagram")}

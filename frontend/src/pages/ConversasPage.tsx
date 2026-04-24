@@ -9,7 +9,7 @@ import { getConversations, threadIdFromHref, type ConversationItem } from "../li
 const DEFAULT_LIMIT = 30
 
 export function ConversasPage() {
-  const { isLinked, activeSessionId, sessions } = useInstaConnect()
+  const { activeSessionId, sessions } = useInstaConnect()
   const [limit, setLimit] = useState(DEFAULT_LIMIT)
   const activeSession = sessions.find((s) => s.id === activeSessionId) ?? null
   const isSessionConnected = Boolean(activeSession?.instagramUsername)
@@ -38,12 +38,12 @@ export function ConversasPage() {
         throw e
       }
     },
-    enabled: isLinked && isSessionConnected,
+    enabled: isSessionConnected,
   })
 
   const errMessage = isError && error instanceof Error ? error.message : null
 
-  if (!isLinked || !isSessionConnected) {
+  if (!isSessionConnected) {
     return (
       <div className="mx-auto max-w-lg rounded-xl border border-amber-200 bg-amber-50 p-6 text-center">
         <Inbox className="mx-auto h-10 w-10 text-amber-800" aria-hidden />

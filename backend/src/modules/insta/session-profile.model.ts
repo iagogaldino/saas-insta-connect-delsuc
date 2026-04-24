@@ -9,6 +9,16 @@ const instaSessionProfileSchema = new Schema(
     instagramProfilePicUrl: { type: String, required: false, default: null },
     lastLoginAt: { type: Date, required: true, default: Date.now },
     requiresRelogin: { type: Boolean, required: true, default: false },
+    incomingWebhookUrl: { type: String, required: false, default: null },
+    incomingWebhookEnabled: { type: Boolean, required: true, default: false },
+    incomingWebhookLastStatus: {
+      type: String,
+      enum: ["ok", "error", null],
+      required: false,
+      default: null,
+    },
+    incomingWebhookLastError: { type: String, required: false, default: null },
+    incomingWebhookLastSentAt: { type: Date, required: false, default: null },
   },
   {
     versionKey: false,

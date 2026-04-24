@@ -48,6 +48,22 @@ type UserSessionState = {
 type InstagramPublicProfile = {
   fullName: string | null;
   profilePicUrl: string | null;
+  found: boolean;
+  /** `username` no payload da API (quando disponível). */
+  resolvedUsername: string | null;
+};
+
+type IncomingWebhookStatus = "ok" | "error" | null;
+
+type IncomingWebhookPayload = {
+  event: "instagram.dm.received";
+  sessionId: string;
+  instagramUsername: string | null;
+  threadId: string | null;
+  messageText: string | null;
+  senderUsername: string | null;
+  receivedAt: string;
+  raw: unknown;
 };
 
 function logInstaAuth(event: string, meta?: Record<string, unknown>): void {
@@ -78,41 +94,77 @@ function uniqueSessionIds(items: Array<string | null | undefined>): string[] {
   return [...new Set(items.filter((item): item is string => typeof item === "string" && item.trim().length > 0))];
 }
 
+/** App id usado pelo Instagram Web (mesmo do site) — a API pública rejeita requests sem isso. */
+const INSTAGRAM_WEB_APP_ID = "936619743392459";
+
+function webProfileInfoRequestHeaders(usernameForReferer: string): Record<string, string> {
+  const u = encodeURIComponent(usernameForReferer);
+  return {
+    "User-Agent":
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    Accept: "application/json, text/plain, */*",
+    "Accept-Language": "en-US,en;q=0.9,pt-BR;q=0.8,pt;q=0.7",
+    "X-IG-App-ID": INSTAGRAM_WEB_APP_ID,
+    "X-ASBD-ID": "198387",
+    "X-IG-WWW-Claim": "0",
+    Origin: "https://www.instagram.com",
+    Referer: `https://www.instagram.com/${u}/`,
+  };
+}
+
+type WebProfileInfoJson = {
+  status?: string;
+  message?: string;
+  data?: {
+    user?: {
+      username?: string;
+      full_name?: string;
+      profile_pic_url_hd?: string;
+      profile_pic_url?: string;
+    } | null;
+  };
+};
+
 async function fetchInstagramPublicProfile(username: string): Promise<InstagramPublicProfile> {
+  const empty: InstagramPublicProfile = {
+    fullName: null,
+    profilePicUrl: null,
+    found: false,
+    resolvedUsername: null,
+  };
   try {
     const response = await fetch(
       `https://www.instagram.com/api/v1/users/web_profile_info/?username=${encodeURIComponent(username)}`,
-      {
-        headers: {
-          "User-Agent": "Mozilla/5.0",
-          Accept: "application/json",
-        },
-      },
+      { headers: webProfileInfoRequestHeaders(username) },
     );
     if (!response.ok) {
-      return { fullName: null, profilePicUrl: null };
+      return empty;
     }
-    const data = (await response.json()) as {
-      data?: {
-        user?: {
-          full_name?: string;
-          profile_pic_url_hd?: string;
-          profile_pic_url?: string;
-        };
-      };
-    };
-    const user = data?.data?.user;
+    const data = (await response.json()) as WebProfileInfoJson;
+    if (data.status === "fail") {
+      return empty;
+    }
+    const msg = typeof data.message === "string" ? data.message.toLowerCase() : "";
+    if (msg.includes("user not found") || msg.includes("not found")) {
+      return empty;
+    }
+    const user = data.data?.user;
+    if (!user) {
+      return empty;
+    }
     return {
-      fullName: typeof user?.full_name === "string" ? user.full_name : null,
+      fullName: typeof user.full_name === "string" ? user.full_name : null,
       profilePicUrl:
-        typeof user?.profile_pic_url_hd === "string"
+        typeof user.profile_pic_url_hd === "string"
           ? user.profile_pic_url_hd
-          : typeof user?.profile_pic_url === "string"
+          : typeof user.profile_pic_url === "string"
             ? user.profile_pic_url
             : null,
+      found: true,
+      resolvedUsername: typeof user.username === "string" ? user.username : null,
     };
   } catch {
-    return { fullName: null, profilePicUrl: null };
+    return empty;
   }
 }
 
@@ -121,7 +173,9 @@ async function buildSessionsResponse(userId: string, state: UserSessionState) {
     userId,
     sessionId: { $in: state.sessionIds },
   })
-    .select("sessionId instagramUsername instagramFullName instagramProfilePicUrl requiresRelogin")
+    .select(
+      "sessionId instagramUsername instagramFullName instagramProfilePicUrl requiresRelogin incomingWebhookUrl incomingWebhookEnabled incomingWebhookLastStatus incomingWebhookLastError incomingWebhookLastSentAt",
+    )
     .lean();
 
   const bySession = new Map(profiles.map((profile) => [profile.sessionId, profile] as const));
@@ -138,6 +192,11 @@ async function buildSessionsResponse(userId: string, state: UserSessionState) {
         instagramFullName: profile?.instagramFullName ?? null,
         instagramProfilePicUrl: profile?.instagramProfilePicUrl ?? null,
         requiresRelogin: Boolean(profile?.requiresRelogin),
+        incomingWebhookUrl: profile?.incomingWebhookUrl ?? null,
+        incomingWebhookEnabled: Boolean(profile?.incomingWebhookEnabled),
+        incomingWebhookLastStatus: (profile?.incomingWebhookLastStatus as IncomingWebhookStatus) ?? null,
+        incomingWebhookLastError: profile?.incomingWebhookLastError ?? null,
+        incomingWebhookLastSentAt: profile?.incomingWebhookLastSentAt ?? null,
       };
     }),
   };
@@ -150,6 +209,120 @@ async function markSessionRequiresRelogin(userId: string, sessionId: string, rea
     { upsert: false },
   ).catch(() => null);
   logInstaAuth("session:requires-relogin", { userId, sessionId, reason });
+}
+
+function pickString(...values: unknown[]): string | null {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim().length > 0) {
+      return value;
+    }
+  }
+  return null;
+}
+
+function isIncomingDmTapEvent(evt: DmTapEvent): boolean {
+  const raw = evt as unknown as Record<string, unknown>;
+  const direction = String(raw.direction ?? raw.messageDirection ?? raw.type ?? "").toLowerCase();
+  const sender = String(raw.sender ?? "").toLowerCase();
+  const isFromMe = raw.isFromMe;
+  const isIncoming = raw.isIncoming;
+  if (typeof isIncoming === "boolean") return isIncoming;
+  if (typeof isFromMe === "boolean") return !isFromMe;
+  if (sender === "me") return false;
+  if (sender === "other") return true;
+  if (direction.includes("outgoing") || direction === "me") return false;
+  if (direction.includes("incoming") || direction.includes("received")) return true;
+  return true;
+}
+
+function buildIncomingWebhookPayload(sessionId: string, instagramUsername: string | null, evt: DmTapEvent): IncomingWebhookPayload {
+  const raw = evt as unknown as Record<string, unknown>;
+  const senderObj =
+    raw.sender && typeof raw.sender === "object" && raw.sender !== null
+      ? (raw.sender as Record<string, unknown>)
+      : null;
+  return {
+    event: "instagram.dm.received",
+    sessionId,
+    instagramUsername,
+    threadId: pickString(raw.threadId, raw.thread_id, raw.conversationId, raw.chatId),
+    messageText: pickString(raw.text, raw.message, raw.body, raw.content),
+    senderUsername: pickString(raw.senderUsername, raw.fromUsername, raw.username, senderObj?.username),
+    receivedAt: new Date().toISOString(),
+    raw: evt,
+  };
+}
+
+function isValidHttpUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+async function postIncomingWebhook(profileId: unknown, url: string, payload: IncomingWebhookPayload): Promise<void> {
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!response.ok) {
+      throw new Error(`Webhook respondeu ${response.status} ${response.statusText}`);
+    }
+    await InstaSessionProfileModel.updateOne(
+      { _id: profileId },
+      {
+        $set: {
+          incomingWebhookLastStatus: "ok",
+          incomingWebhookLastError: null,
+          incomingWebhookLastSentAt: new Date(),
+        },
+      },
+    ).catch(() => null);
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    await InstaSessionProfileModel.updateOne(
+      { _id: profileId },
+      {
+        $set: {
+          incomingWebhookLastStatus: "error",
+          incomingWebhookLastError: message.slice(0, 500),
+        },
+      },
+    ).catch(() => null);
+  }
+}
+
+async function dispatchIncomingDmWebhook(sessionId: string, evt: DmTapEvent): Promise<void> {
+  if (!isIncomingDmTapEvent(evt)) {
+    return;
+  }
+  const profile = await InstaSessionProfileModel.findOne({ sessionId })
+    .select("_id instagramUsername incomingWebhookUrl incomingWebhookEnabled")
+    .lean();
+  if (!profile?.incomingWebhookEnabled || !profile.incomingWebhookUrl) {
+    return;
+  }
+  if (!isValidHttpUrl(profile.incomingWebhookUrl)) {
+    await InstaSessionProfileModel.updateOne(
+      { _id: profile._id },
+      { $set: { incomingWebhookLastStatus: "error", incomingWebhookLastError: "URL de webhook inválida." } },
+    ).catch(() => null);
+    return;
+  }
+  const payload = buildIncomingWebhookPayload(sessionId, profile.instagramUsername ?? null, evt);
+  await postIncomingWebhook(profile._id, profile.incomingWebhookUrl, payload);
+}
+
+async function isIncomingWebhookEnabledForSession(sessionId: string): Promise<boolean> {
+  const profile = await InstaSessionProfileModel.findOne({ sessionId })
+    .select("incomingWebhookEnabled incomingWebhookUrl")
+    .lean();
+  return Boolean(profile?.incomingWebhookEnabled && profile?.incomingWebhookUrl);
 }
 
 async function cleanupSessionFiles(sessionId: string): Promise<void> {
@@ -317,7 +490,14 @@ async function getInstaRuntimeForRequest(req: Request): Promise<InstaRuntime> {
   }
 
   const state = await getOrCreateUserSessionState(userId);
-  const sessionId = state.activeSessionId;
+  const headerSessionId =
+    typeof req.header("x-insta-session-id") === "string" ? req.header("x-insta-session-id")?.trim() : "";
+  const querySessionId = typeof req.query.sessionId === "string" ? req.query.sessionId.trim() : "";
+  const requestedSessionId = headerSessionId || querySessionId || "";
+  if (requestedSessionId && !state.sessionIds.includes(requestedSessionId)) {
+    throw new Error("SESSION_NOT_FOUND");
+  }
+  const sessionId = requestedSessionId || state.activeSessionId;
   if (!sessionId) {
     throw new Error("NO_ACTIVE_SESSION");
   }
@@ -349,12 +529,55 @@ function getOrCreateInstaRuntimeBySessionId(sessionId: string): InstaRuntime {
   return runtime;
 }
 
+async function tryGetActiveInstaClient(req: Request): Promise<InstaConnect | null> {
+  const userId = req.authUser?.id;
+  if (!userId) {
+    return null;
+  }
+  const state = await getOrCreateUserSessionState(userId);
+  if (!state.activeSessionId) {
+    return null;
+  }
+  return getOrCreateInstaRuntimeBySessionId(state.activeSessionId).client;
+}
+
+/**
+ * Se a API pública bloquear, usa a busca do Instagram logado (mesma sessão do `searchUsers`,
+ * requer browser/sessão ok). Foto pode vir vazia — os tipos do resultado de busca não trazem sempre.
+ */
+async function tryInstaSearchProfilePreview(
+  client: InstaConnect,
+  username: string,
+): Promise<InstagramPublicProfile | null> {
+  const normalized = username.toLowerCase();
+  try {
+    const result = await client.searchUsers(username, { limit: 40 });
+    const u = result.users.find((x) => x.username.toLowerCase() === normalized);
+    if (!u) {
+      return null;
+    }
+    const extra = u as { profilePicUrl?: string };
+    return {
+      found: true,
+      fullName: u.fullName?.trim() ? u.fullName : null,
+      profilePicUrl: typeof extra.profilePicUrl === "string" ? extra.profilePicUrl : null,
+      resolvedUsername: u.username,
+    };
+  } catch {
+    return null;
+  }
+}
+
 async function getInstaRuntimeOrSendError(req: Request, res: Response): Promise<InstaRuntime | null> {
   try {
     return await getInstaRuntimeForRequest(req);
   } catch (e) {
     if (e instanceof Error && e.message === "NO_ACTIVE_SESSION") {
       res.status(400).json({ ok: false, error: "Nenhuma sessão ativa. Crie uma nova sessão." });
+      return null;
+    }
+    if (e instanceof Error && e.message === "SESSION_NOT_FOUND") {
+      res.status(404).json({ ok: false, error: "Sessão não encontrada para este usuário." });
       return null;
     }
     const message = e instanceof Error ? e.message : String(e);
@@ -370,6 +593,7 @@ function writeSse(res: Response, event: string, payload: unknown) {
 }
 
 function broadcastDmTap(runtime: InstaRuntime, evt: DmTapEvent) {
+  void dispatchIncomingDmWebhook(runtime.sessionId, evt);
   for (const r of runtime.dmTapSseClients) {
     if (r.writableEnded) {
       runtime.dmTapSseClients.delete(r);
@@ -498,10 +722,36 @@ app.post("/insta/sessions/:sessionId/runtime/start", async (req, res) => {
       await markSessionRequiresRelogin(userId, sessionId, "runtime_started_but_not_authenticated");
     }
 
+    let webhookListenerStarted = false;
+    let webhookListenerError: string | null = null;
+    if (isInstagramAuthenticated) {
+      const webhookEnabled = await isIncomingWebhookEnabledForSession(sessionId);
+      if (webhookEnabled) {
+        try {
+          await ensureDmTapForSse(runtime);
+          webhookListenerStarted = true;
+        } catch (e) {
+          webhookListenerError = e instanceof Error ? e.message : String(e);
+          logInstaAuth("incoming-webhook:listener-start-failed", {
+            userId,
+            sessionId,
+            error: webhookListenerError,
+          });
+        }
+      }
+    }
+
+    const runtimeStatusParts = [runtimeStatusMessage];
+    if (webhookListenerStarted) {
+      runtimeStatusParts.push("Escuta de mensagens para webhook iniciada.");
+    } else if (webhookListenerError) {
+      runtimeStatusParts.push(`Falha ao iniciar escuta de webhook: ${webhookListenerError}`);
+    }
+
     res.json({
       ...(await buildSessionsResponse(userId, state)),
       isInstagramAuthenticated,
-      runtimeStatusMessage,
+      runtimeStatusMessage: runtimeStatusParts.join(" "),
       loginUrl,
     });
   } catch (e) {
@@ -545,6 +795,112 @@ app.post("/insta/sessions/:sessionId/runtime/stop", async (req, res) => {
       ...(await buildSessionsResponse(userId, state)),
       isInstagramAuthenticated: false,
       runtimeStatusMessage: "Instância desligada com sucesso.",
+    });
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    res.status(500).json({ ok: false, error: message });
+  }
+});
+
+app.put("/insta/sessions/:sessionId/incoming-webhook", async (req, res) => {
+  try {
+    const userId = req.authUser?.id;
+    if (!userId) {
+      res.status(401).json({ ok: false, error: "Unauthorized." });
+      return;
+    }
+
+    const sessionId = typeof req.params.sessionId === "string" ? req.params.sessionId.trim() : "";
+    if (!sessionId) {
+      res.status(400).json({ ok: false, error: "sessionId é obrigatório." });
+      return;
+    }
+
+    const state = await getOrCreateUserSessionState(userId);
+    if (!state.sessionIds.includes(sessionId)) {
+      res.status(404).json({ ok: false, error: "Sessão não encontrada para este usuário." });
+      return;
+    }
+
+    const incomingWebhookUrlRaw =
+      typeof req.body?.incomingWebhookUrl === "string" ? req.body.incomingWebhookUrl.trim() : "";
+    const incomingWebhookEnabled = req.body?.incomingWebhookEnabled === true;
+    const incomingWebhookUrl = incomingWebhookUrlRaw.length > 0 ? incomingWebhookUrlRaw : null;
+    if (incomingWebhookUrl && !isValidHttpUrl(incomingWebhookUrl)) {
+      res.status(400).json({ ok: false, error: "incomingWebhookUrl deve ser uma URL http(s) válida." });
+      return;
+    }
+
+    await InstaSessionProfileModel.updateOne(
+      { userId, sessionId },
+      {
+        $set: {
+          incomingWebhookUrl,
+          incomingWebhookEnabled: incomingWebhookEnabled && Boolean(incomingWebhookUrl),
+          incomingWebhookLastStatus: null,
+          incomingWebhookLastError: null,
+        },
+      },
+      { upsert: true },
+    );
+
+    res.json(await buildSessionsResponse(userId, state));
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    res.status(500).json({ ok: false, error: message });
+  }
+});
+
+app.post("/insta/sessions/:sessionId/incoming-webhook/test", async (req, res) => {
+  try {
+    const userId = req.authUser?.id;
+    if (!userId) {
+      res.status(401).json({ ok: false, error: "Unauthorized." });
+      return;
+    }
+
+    const sessionId = typeof req.params.sessionId === "string" ? req.params.sessionId.trim() : "";
+    if (!sessionId) {
+      res.status(400).json({ ok: false, error: "sessionId é obrigatório." });
+      return;
+    }
+
+    const state = await getOrCreateUserSessionState(userId);
+    if (!state.sessionIds.includes(sessionId)) {
+      res.status(404).json({ ok: false, error: "Sessão não encontrada para este usuário." });
+      return;
+    }
+
+    const profile = await InstaSessionProfileModel.findOne({ userId, sessionId })
+      .select("_id instagramUsername incomingWebhookUrl incomingWebhookEnabled")
+      .lean();
+    if (!profile?.incomingWebhookEnabled || !profile.incomingWebhookUrl) {
+      res.status(409).json({ ok: false, error: "Webhook da sessão está desabilitado ou sem URL configurada." });
+      return;
+    }
+    if (!isValidHttpUrl(profile.incomingWebhookUrl)) {
+      res.status(400).json({ ok: false, error: "incomingWebhookUrl inválida." });
+      return;
+    }
+
+    const payload: IncomingWebhookPayload = {
+      event: "instagram.dm.received",
+      sessionId,
+      instagramUsername: profile.instagramUsername ?? null,
+      threadId: "test-thread",
+      messageText: "Mensagem de teste do webhook da sessão Instagram.",
+      senderUsername: "instagram-test-user",
+      receivedAt: new Date().toISOString(),
+      raw: {
+        kind: "test",
+        note: "Evento de teste disparado manualmente pela API.",
+      },
+    };
+
+    await postIncomingWebhook(profile._id, profile.incomingWebhookUrl, payload);
+    res.json({
+      ...(await buildSessionsResponse(userId, state)),
+      webhookTest: { ok: true, sentAt: payload.receivedAt },
     });
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
@@ -850,6 +1206,49 @@ app.get("/insta/metrics/follows", async (req, res) => {
   }
 });
 
+/**
+ * Dados do perfil para confirmar o @ antes de `auto-follow-followers`.
+ * 1) `web_profile_info` com cabeçalhos de navegador (igual ao site) — o Instagram rejeita requests mínimas.
+ * 2) Se falhar, tenta a busca logada via sessão ativa (Puppeteer; pode abrir o Chromium na primeira chamada).
+ */
+app.get("/insta/preview-profile", async (req, res) => {
+  try {
+    const userId = req.authUser?.id;
+    if (!userId) {
+      res.status(401).json({ ok: false, error: "Unauthorized." });
+      return;
+    }
+    const raw = req.query.username;
+    const input = typeof raw === "string" ? raw.replace(/^@+/g, "").trim() : "";
+    if (!input) {
+      res.status(400).json({ ok: false, error: "Query `username` é obrigatório." });
+      return;
+    }
+    let profile = await fetchInstagramPublicProfile(input.toLowerCase());
+    if (!profile.found) {
+      const client = await tryGetActiveInstaClient(req);
+      if (client) {
+        const viaSearch = await tryInstaSearchProfilePreview(client, input);
+        if (viaSearch) {
+          profile = viaSearch;
+        }
+      }
+    }
+    const username = profile.resolvedUsername ?? input.toLowerCase();
+    res.json({
+      ok: true as const,
+      found: profile.found,
+      username,
+      fullName: profile.fullName,
+      profilePicUrl: profile.profilePicUrl,
+      profileUrl: `https://www.instagram.com/${encodeURIComponent(username)}/`,
+    });
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    res.status(500).json({ ok: false, error: message });
+  }
+});
+
 /** Confirma que a biblioteca está resolvida (sem abrir o Chromium). */
 app.get("/test/insta-connect", (_req, res) => {
   res.json({
@@ -969,7 +1368,7 @@ app.post("/insta/open-conversation", async (req, res) => {
   const dedicatedTab = req.body?.dedicatedTab === true;
   try {
     const result = await client.openConversationByTitle(conversationTitle, { dedicatedTab });
-    res.json({ ok: true, headless, ...result });
+    res.json({ ok: true, conversationTitle: result.conversationTitle });
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
     res.status(500).json({ ok: false, error: message });
@@ -1002,7 +1401,7 @@ app.get("/insta/messages", async (req, res) => {
   }
   try {
     const result = await client.listMessagesByThreadId(threadId, limit);
-    res.json({ ok: true, headless, ...result });
+    res.json({ ok: true, threadId: result.threadId, count: result.count, messages: result.messages });
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
     res.status(500).json({ ok: false, error: message });
@@ -1029,7 +1428,7 @@ app.get("/insta/conversations", async (req, res) => {
   }
   try {
     const conversations = await client.listConversations(limit);
-    res.json({ ok: true, count: conversations.length, limit, headless, conversations });
+    res.json({ ok: true, count: conversations.length, limit, conversations });
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
     res.status(500).json({ ok: false, error: message });
@@ -1292,7 +1691,7 @@ app.post("/insta/messages", async (req, res) => {
   const dedicatedTab = req.body?.dedicatedTab === true;
   try {
     const result = await client.sendMessageToConversation(conversationTitle, text, { dedicatedTab });
-    res.json({ ok: true, headless, ...result });
+    res.json({ ok: true, conversationTitle: result.conversationTitle, text: result.text });
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
     res.status(500).json({ ok: false, error: message });

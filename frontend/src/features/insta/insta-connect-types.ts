@@ -19,6 +19,11 @@ export type InstaSessionItem = {
   instagramUsername: string | null
   instagramFullName: string | null
   instagramProfilePicUrl: string | null
+  incomingWebhookUrl?: string | null
+  incomingWebhookEnabled?: boolean
+  incomingWebhookLastStatus?: "ok" | "error" | null
+  incomingWebhookLastError?: string | null
+  incomingWebhookLastSentAt?: string | null
 }
 
 export type InstaSessionsResult =

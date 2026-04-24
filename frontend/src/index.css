@@ -8,3 +8,27 @@
     @apply min-h-screen;
   }
 }
+
+/* Botão "Confirmar e seguir seguidores" (passo pós-prévia) — chama atenção sem exagerar. */
+@layer components {
+  .ff-confirm-blink {
+    animation: ff-confirm-blink 1.1s ease-in-out infinite;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .ff-confirm-blink {
+      animation: none;
+    }
+  }
+}
+
+@keyframes ff-confirm-blink {
+  0%,
+  100% {
+    opacity: 1;
+    box-shadow: 0 0 0 0 rgb(15 23 42 / 0.35);
+  }
+  50% {
+    opacity: 0.65;
+    box-shadow: 0 0 0 4px rgb(15 23 42 / 0.2);
+  }
+}

@@ -13,7 +13,6 @@ export function DashboardPage() {
   const [integrationTokenMeta, setIntegrationTokenMeta] = useState<string | null>(null)
   const [integrationTokenError, setIntegrationTokenError] = useState<string | null>(null)
   const [copyMessage, setCopyMessage] = useState<string | null>(null)
-  const [showIntegrationDocs, setShowIntegrationDocs] = useState(false)
 
   useEffect(() => {
     let active = true
@@ -86,7 +85,7 @@ export function DashboardPage() {
       <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
         <h3 className="mb-2 text-sm font-semibold text-slate-800">Token de integração</h3>
         <p className="mb-3 text-sm text-slate-500">
-          Gere um token para integrar serviços externos neste SaaS (envio de mensagens e listagem via API).
+          Gere um token para conectar ferramentas externas à sua conta de forma segura.
         </p>
         <div className="flex flex-wrap items-center gap-2">
           <button
@@ -106,65 +105,16 @@ export function DashboardPage() {
               Copiar token
             </button>
           ) : null}
-          <button
-            type="button"
-            onClick={() => setShowIntegrationDocs((v) => !v)}
-            className="rounded-lg border border-slate-200 px-4 py-2 text-sm text-slate-700 hover:bg-slate-50"
-          >
-            {showIntegrationDocs ? "Ocultar documentação" : "Ver documentação"}
-          </button>
         </div>
         {integrationTokenMeta ? <p className="mt-3 text-xs text-slate-500">{integrationTokenMeta}</p> : null}
         {integrationTokenError ? <p className="mt-3 text-sm text-rose-600">{integrationTokenError}</p> : null}
         {copyMessage ? <p className="mt-2 text-xs text-emerald-700">{copyMessage}</p> : null}
         {integrationToken ? (
           <div className="mt-3">
-            <p className="mb-1 text-xs font-medium text-slate-600">Use este token como Bearer nas chamadas da API:</p>
+            <p className="mb-1 text-xs font-medium text-slate-600">Guarde este token e use onde a integração solicitar autenticação.</p>
             <pre className="overflow-auto rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-700">
               {integrationToken}
             </pre>
-          </div>
-        ) : null}
-        {showIntegrationDocs ? (
-          <div className="mt-4 space-y-3 rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-700">
-            <p className="font-medium text-slate-800">Documentação rápida de integração</p>
-            <p>
-              Base URL local: <code>http://127.0.0.1:3000</code>
-            </p>
-            <p>
-              Header obrigatório: <code>Authorization: Bearer SEU_TOKEN</code>
-            </p>
-            <p>
-              Para escolher o Instagram da requisição, envie também:{" "}
-              <code>x-insta-session-id: ID_DA_SESSAO</code> (ou query <code>sessionId</code>).
-            </p>
-            <div>
-              <p className="mb-1 font-medium text-slate-800">Listar conversas</p>
-              <pre className="overflow-auto rounded-md border border-slate-200 bg-white p-2 text-[11px]">
-{`curl "http://127.0.0.1:3000/insta/conversations?limit=30" \\
-  -H "Authorization: Bearer SEU_TOKEN" \\
-  -H "x-insta-session-id: ID_DA_SESSAO"`}
-              </pre>
-            </div>
-            <div>
-              <p className="mb-1 font-medium text-slate-800">Ler mensagens da thread</p>
-              <pre className="overflow-auto rounded-md border border-slate-200 bg-white p-2 text-[11px]">
-{`curl "http://127.0.0.1:3000/insta/messages?threadId=THREAD_ID&limit=50" \\
-  -H "Authorization: Bearer SEU_TOKEN" \\
-  -H "x-insta-session-id: ID_DA_SESSAO"`}
-              </pre>
-            </div>
-            <div>
-              <p className="mb-1 font-medium text-slate-800">Enviar mensagem</p>
-              <pre className="overflow-auto rounded-md border border-slate-200 bg-white p-2 text-[11px]">
-{`curl "http://127.0.0.1:3000/insta/messages" \\
-  -X POST \\
-  -H "Content-Type: application/json" \\
-  -H "Authorization: Bearer SEU_TOKEN" \\
-  -H "x-insta-session-id: ID_DA_SESSAO" \\
-  -d '{"conversationTitle":"NOME_DA_CONVERSA","text":"Olá!"}'`}
-              </pre>
-            </div>
           </div>
         ) : null}
       </div>
@@ -208,7 +158,7 @@ export function DashboardPage() {
                 <Icon className="h-5 w-5 opacity-50" aria-hidden />
               </div>
               <p className="mt-3 text-2xl font-semibold tabular-nums text-slate-900">{card.value}</p>
-              <p className="mt-1 text-xs text-slate-400">Dados de follows salvos no Mongo</p>
+              <p className="mt-1 text-xs text-slate-400">Dados atualizados automaticamente</p>
             </div>
           )
         })}

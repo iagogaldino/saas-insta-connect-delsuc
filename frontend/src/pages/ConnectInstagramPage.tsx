@@ -47,7 +47,7 @@ export function ConnectInstagramPage() {
     setPassword("")
     setSecurityCode("")
 
-    void navigate("/connect-instagram", { replace: true })
+    void navigate("/app/connect-instagram", { replace: true })
   }, [searchParams, sessions, activeSessionId, navigate])
 
   async function handleSubmit(e: FormEvent<HTMLFormElement>) {
@@ -308,7 +308,7 @@ export function ConnectInstagramPage() {
       setPendingTwoFactorUsername("")
       setSecurityCode("")
     }
-    void navigate("/instagram/session-active")
+    void navigate("/app/instagram/session-active")
   }
 
   return (

@@ -3,9 +3,14 @@ import { Loader2, Play, Users } from "lucide-react"
 import { useEffect, useState, type FormEvent, type ReactNode } from "react"
 import { useNavigate } from "react-router-dom"
 import { useInstaConnect } from "../features/insta/use-insta-connect"
+import { formatDateTimeBr, formatIsoDateBr } from "../lib/format-br"
 import {
+  deleteFollowSchedule,
   getAutoFollowJobStatus,
+  getFollowSchedules,
   getInstaPreviewProfile,
+  patchFollowSchedule,
+  postFollowSchedule,
   postInstaIncomingWebhookTest,
   postAutoFollowFollowers,
   postAutoFollowSuggested,
@@ -14,6 +19,7 @@ import {
   type AutoFollowPrivacyFilter,
   type AutoFollowResponse,
   type AutoFollowResultItem,
+  type FollowScheduleItem,
   type InstaPreviewProfileResponse,
 } from "../lib/insta"
 
@@ -23,6 +29,50 @@ type ResultPanelData = {
   attempted: number
   privacyFilter: string
   results: AutoFollowResultItem[]
+}
+
+type ScheduleDraftEntry = { date: string; quantity: number }
+
+type ScheduleDraft = {
+  entries: ScheduleDraftEntry[]
+  dateInput: string
+  quantityInput: number
+  runTime: string
+  keepActive: boolean
+  weeklyDays: number[]
+}
+
+const weekDays: Array<{ value: number; label: string }> = [
+  { value: 0, label: "Dom" },
+  { value: 1, label: "Seg" },
+  { value: 2, label: "Ter" },
+  { value: 3, label: "Qua" },
+  { value: 4, label: "Qui" },
+  { value: 5, label: "Sex" },
+  { value: 6, label: "Sab" },
+]
+
+/** YYYY-MM-DD (fuso local) — alinha com <input type="date" />. */
+function todayLocalYmd(): string {
+  const d = new Date()
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, "0")
+  const day = String(d.getDate()).padStart(2, "0")
+  return `${y}-${m}-${day}`
+}
+
+/** HH:mm (fuso local) — para min em <input type="time" /> no dia de hoje. */
+function nowLocalHm(): string {
+  const d = new Date()
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`
+}
+
+/** `new Date("YYYY-MM-DDTHH:mm:00")` em horário local. */
+function isLocalDateTimeInThePast(ymd: string, hm: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(ymd) || !/^\d{2}:\d{2}$/.test(hm)) return true
+  const t = new Date(`${ymd}T${hm}:00`)
+  if (Number.isNaN(t.getTime())) return true
+  return t.getTime() < Date.now()
 }
 
 function AutoFollowResultsPanel({
@@ -180,8 +230,30 @@ export function ActiveSessionPage() {
   const [incomingWebhookMessage, setIncomingWebhookMessage] = useState<string | null>(null)
   const [incomingWebhookError, setIncomingWebhookError] = useState<string | null>(null)
   const [showWebhookPayloadPreview, setShowWebhookPayloadPreview] = useState(false)
+  const [scheduleLoading, setScheduleLoading] = useState(false)
+  const [scheduleMessage, setScheduleMessage] = useState<string | null>(null)
+  const [scheduleError, setScheduleError] = useState<string | null>(null)
+  const [suggestedSchedules, setSuggestedSchedules] = useState<FollowScheduleItem[]>([])
+  const [followersSchedules, setFollowersSchedules] = useState<FollowScheduleItem[]>([])
+  const [suggestedDraft, setSuggestedDraft] = useState<ScheduleDraft>({
+    entries: [],
+    dateInput: "",
+    quantityInput: 20,
+    runTime: "10:00",
+    keepActive: false,
+    weeklyDays: [],
+  })
+  const [followersDraft, setFollowersDraft] = useState<ScheduleDraft>({
+    entries: [],
+    dateInput: "",
+    quantityInput: 20,
+    runTime: "10:00",
+    keepActive: false,
+    weeklyDays: [],
+  })
 
-  const formBusy = isSubmitting || ffSubmitting || ffPreviewLoading || incomingWebhookSaving || incomingWebhookTesting
+  const formBusy =
+    isSubmitting || ffSubmitting || ffPreviewLoading || incomingWebhookSaving || incomingWebhookTesting || scheduleLoading
   const activeSession = sessions.find((s) => s.id === activeSessionId) ?? null
   const isSessionConnected = Boolean(activeSession?.instagramUsername)
   const incomingWebhookStatus = activeSession?.incomingWebhookLastStatus ?? null
@@ -212,6 +284,162 @@ export function ActiveSessionPage() {
     setIncomingWebhookMessage(null)
     setIncomingWebhookError(null)
   }, [activeSessionId, activeSession?.incomingWebhookUrl, activeSession?.incomingWebhookEnabled])
+
+  useEffect(() => {
+    void refreshSchedules()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeSessionId])
+
+  async function refreshSchedules() {
+    if (!activeSessionId) {
+      setSuggestedSchedules([])
+      setFollowersSchedules([])
+      return
+    }
+    setScheduleLoading(true)
+    try {
+      const [suggestedRes, followersRes] = await Promise.all([
+        getFollowSchedules("suggested"),
+        getFollowSchedules("followers"),
+      ])
+      setSuggestedSchedules(suggestedRes.data.schedules)
+      setFollowersSchedules(followersRes.data.schedules)
+    } catch (e) {
+      if (axios.isAxiosError(e)) {
+        const body = e.response?.data as { error?: string } | undefined
+        setScheduleError(body?.error ?? e.message)
+      } else {
+        setScheduleError(e instanceof Error ? e.message : "Falha ao carregar agendamentos.")
+      }
+    } finally {
+      setScheduleLoading(false)
+    }
+  }
+
+  function addDateEntry(draft: ScheduleDraft, setDraft: (next: ScheduleDraft) => void) {
+    setScheduleError(null)
+    if (!draft.dateInput) return
+    if (isLocalDateTimeInThePast(draft.dateInput, draft.runTime)) {
+      setScheduleError("Use uma data a partir de hoje e, se for hoje, um horário depois do atual.")
+      return
+    }
+    const quantity = Math.max(1, Math.min(100, Math.floor(draft.quantityInput || 1)))
+    const nextMap = new Map(draft.entries.map((item) => [item.date, item.quantity] as const))
+    nextMap.set(draft.dateInput, quantity)
+    const nextEntries = [...nextMap.entries()]
+      .map(([date, q]) => ({ date, quantity: q }))
+      .sort((a, b) => a.date.localeCompare(b.date))
+    setDraft({ ...draft, entries: nextEntries, dateInput: "" })
+  }
+
+  function removeDateEntry(draft: ScheduleDraft, setDraft: (next: ScheduleDraft) => void, date: string) {
+    setDraft({ ...draft, entries: draft.entries.filter((item) => item.date !== date) })
+  }
+
+  function toggleWeeklyDay(draft: ScheduleDraft, setDraft: (next: ScheduleDraft) => void, day: number) {
+    const exists = draft.weeklyDays.includes(day)
+    const next = exists ? draft.weeklyDays.filter((d) => d !== day) : [...draft.weeklyDays, day].sort((a, b) => a - b)
+    setDraft({ ...draft, weeklyDays: next })
+  }
+
+  async function createSchedule(flowType: "suggested" | "followers") {
+    const draft = flowType === "suggested" ? suggestedDraft : followersDraft
+    const setDraft = flowType === "suggested" ? setSuggestedDraft : setFollowersDraft
+    setScheduleMessage(null)
+    setScheduleError(null)
+    if (draft.entries.length === 0) {
+      setScheduleError("Adicione ao menos uma data no calendário.")
+      return
+    }
+    if (draft.keepActive && draft.weeklyDays.length === 0) {
+      setScheduleError("Para manter ativa, selecione ao menos um dia da semana.")
+      return
+    }
+    if (flowType === "followers" && !ffTarget.trim()) {
+      setScheduleError("Informe o perfil alvo para agendamento de seguidores.")
+      return
+    }
+    for (const e of draft.entries) {
+      if (isLocalDateTimeInThePast(e.date, draft.runTime)) {
+        setScheduleError(
+          `A combinação ${e.date} às ${draft.runTime} está no passado. Ajuste o horário de disparo ou as datas.`,
+        )
+        return
+      }
+    }
+    setScheduleLoading(true)
+    try {
+      await postFollowSchedule({
+        flowType,
+        entries: draft.entries,
+        privacyFilter: flowType === "suggested" ? privacyFilter : ffPrivacy,
+        targetUsername: flowType === "followers" ? ffTarget.trim() : undefined,
+        keepActive: draft.keepActive,
+        weeklyDays: draft.keepActive ? draft.weeklyDays : [],
+        runTime: draft.runTime,
+      })
+      setDraft({
+        entries: [],
+        dateInput: "",
+        quantityInput: 20,
+        runTime: draft.runTime,
+        keepActive: draft.keepActive,
+        weeklyDays: draft.weeklyDays,
+      })
+      setScheduleMessage("Agendamento salvo com sucesso.")
+      await refreshSchedules()
+    } catch (e) {
+      if (axios.isAxiosError(e)) {
+        const body = e.response?.data as { error?: string } | undefined
+        setScheduleError(body?.error ?? e.message)
+      } else {
+        setScheduleError(e instanceof Error ? e.message : "Não foi possível salvar o agendamento.")
+      }
+    } finally {
+      setScheduleLoading(false)
+    }
+  }
+
+  async function toggleScheduleStatus(item: FollowScheduleItem) {
+    const nextStatus = item.status === "active" ? "paused" : "active"
+    setScheduleLoading(true)
+    setScheduleMessage(null)
+    setScheduleError(null)
+    try {
+      await patchFollowSchedule(item.id, { status: nextStatus })
+      setScheduleMessage(nextStatus === "active" ? "Agendamento reativado." : "Agendamento pausado.")
+      await refreshSchedules()
+    } catch (e) {
+      if (axios.isAxiosError(e)) {
+        const body = e.response?.data as { error?: string } | undefined
+        setScheduleError(body?.error ?? e.message)
+      } else {
+        setScheduleError(e instanceof Error ? e.message : "Falha ao atualizar agendamento.")
+      }
+    } finally {
+      setScheduleLoading(false)
+    }
+  }
+
+  async function removeSchedule(item: FollowScheduleItem) {
+    setScheduleLoading(true)
+    setScheduleMessage(null)
+    setScheduleError(null)
+    try {
+      await deleteFollowSchedule(item.id)
+      setScheduleMessage("Agendamento removido.")
+      await refreshSchedules()
+    } catch (e) {
+      if (axios.isAxiosError(e)) {
+        const body = e.response?.data as { error?: string } | undefined
+        setScheduleError(body?.error ?? e.message)
+      } else {
+        setScheduleError(e instanceof Error ? e.message : "Falha ao remover agendamento.")
+      }
+    } finally {
+      setScheduleLoading(false)
+    }
+  }
 
   function tryNavigateRelogin(apiError: string) {
     const authSessionError =
@@ -398,6 +626,200 @@ export function ActiveSessionPage() {
     }
   }
 
+  function renderSchedulePanel(
+    title: string,
+    flowType: "suggested" | "followers",
+    draft: ScheduleDraft,
+    setDraft: (next: ScheduleDraft) => void,
+    items: FollowScheduleItem[],
+  ) {
+    const minDate = todayLocalYmd()
+    const timeMin = draft.dateInput && draft.dateInput === minDate ? nowLocalHm() : undefined
+    const slotInPast =
+      Boolean(draft.dateInput) && isLocalDateTimeInThePast(draft.dateInput, draft.runTime)
+    const hasInvalidSavedSlot = draft.entries.some((e) => isLocalDateTimeInThePast(e.date, draft.runTime))
+
+    return (
+      <div className="space-y-3 rounded-lg border border-slate-200 p-4">
+        <h5 className="text-sm font-semibold text-slate-800">{title}</h5>
+        <p className="text-xs text-slate-500">
+          Só é permitido agendar a partir de hoje; se a data for hoje, o horário precisa ser depois de agora.
+        </p>
+        <div className="flex flex-wrap items-end gap-2">
+          <div>
+            <label className="mb-1 block text-xs font-medium text-slate-600">Data</label>
+            <input
+              type="date"
+              value={draft.dateInput}
+              min={minDate}
+              onChange={(e) => {
+                const v = e.target.value
+                if (v && v < minDate) return
+                let runTime = draft.runTime
+                if (v === minDate && runTime < nowLocalHm()) {
+                  runTime = nowLocalHm()
+                }
+                setDraft({ ...draft, dateInput: v, runTime })
+              }}
+              disabled={formBusy || !isSessionConnected}
+              className="rounded-lg border border-slate-200 px-3 py-2 text-sm"
+            />
+          </div>
+          <div>
+            <label className="mb-1 block text-xs font-medium text-slate-600">Quantidade (1-100)</label>
+            <input
+              type="number"
+              min={1}
+              max={100}
+              value={draft.quantityInput}
+              onChange={(e) => setDraft({ ...draft, quantityInput: Number(e.target.value) })}
+              disabled={formBusy || !isSessionConnected}
+              className="w-28 rounded-lg border border-slate-200 px-3 py-2 text-sm"
+            />
+          </div>
+          <button
+            type="button"
+            onClick={() => addDateEntry(draft, setDraft)}
+            disabled={formBusy || !isSessionConnected || !draft.dateInput || slotInPast}
+            className="rounded-lg border border-slate-200 px-3 py-2 text-sm hover:bg-slate-50 disabled:opacity-60"
+          >
+            Adicionar data
+          </button>
+          <div>
+            <label className="mb-1 block text-xs font-medium text-slate-600">Horário de disparo</label>
+            <input
+              type="time"
+              value={draft.runTime}
+              min={timeMin}
+              onChange={(e) => {
+                let v = e.target.value
+                if (draft.dateInput === minDate && v < nowLocalHm()) {
+                  v = nowLocalHm()
+                }
+                setDraft({ ...draft, runTime: v })
+              }}
+              disabled={formBusy || !isSessionConnected}
+              className="rounded-lg border border-slate-200 px-3 py-2 text-sm"
+            />
+          </div>
+        </div>
+        <div className="space-y-1">
+          {draft.entries.length === 0 ? (
+            <p className="text-xs text-slate-500">Nenhuma data adicionada.</p>
+          ) : (
+            draft.entries.map((entry) => (
+              <div key={entry.date} className="flex items-center justify-between rounded border border-slate-200 px-3 py-2 text-sm">
+                <span>
+                  {formatIsoDateBr(entry.date)} — {entry.quantity} perfis
+                </span>
+                <button
+                  type="button"
+                  onClick={() => removeDateEntry(draft, setDraft, entry.date)}
+                  disabled={formBusy}
+                  className="text-rose-600 hover:underline disabled:opacity-60"
+                >
+                  remover
+                </button>
+              </div>
+            ))
+          )}
+        </div>
+        <label className="inline-flex items-center gap-2 text-sm text-slate-700">
+          <input
+            type="checkbox"
+            checked={draft.keepActive}
+            onChange={(e) => setDraft({ ...draft, keepActive: e.target.checked })}
+            disabled={formBusy || !isSessionConnected}
+          />
+          Manter ativa (recorrência semanal)
+        </label>
+        {draft.keepActive ? (
+          <div className="flex flex-wrap gap-2">
+            {weekDays.map((day) => (
+              <button
+                key={day.value}
+                type="button"
+                onClick={() => toggleWeeklyDay(draft, setDraft, day.value)}
+                className={`rounded-md border px-2 py-1 text-xs ${
+                  draft.weeklyDays.includes(day.value)
+                    ? "border-slate-900 bg-slate-900 text-white"
+                    : "border-slate-200 text-slate-700 hover:bg-slate-50"
+                }`}
+                disabled={formBusy || !isSessionConnected}
+              >
+                {day.label}
+              </button>
+            ))}
+          </div>
+        ) : null}
+        <button
+          type="button"
+          onClick={() => void createSchedule(flowType)}
+          disabled={formBusy || !isSessionConnected || hasInvalidSavedSlot}
+          className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-60"
+        >
+          Salvar agendamento
+        </button>
+        {hasInvalidSavedSlot ? (
+          <p className="text-xs text-amber-800">
+            Ajuste o horário de disparo: alguma data da lista caiu no passado com o horário atual.
+          </p>
+        ) : null}
+        <div className="space-y-2">
+          {items.length === 0 ? (
+            <p className="text-xs text-slate-500">Sem agendamentos salvos para este fluxo.</p>
+          ) : (
+            items.map((item) => (
+              <div key={item.id} className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-700">
+                <p>
+                  Status: <strong>{item.status}</strong> · Próximo:{" "}
+                  {item.nextRunAt ? formatDateTimeBr(item.nextRunAt) : "não definido"} · Horário padrão:{" "}
+                  <code>{item.runTime}</code>
+                </p>
+                <ul className="list-inside list-disc text-slate-600">
+                  {item.entries.map((entry) => (
+                    <li key={entry.date}>
+                      {formatIsoDateBr(entry.date)} — {entry.quantity} perfis
+                      {entry.dispatched ? (
+                        <span className="ml-1 text-emerald-700">
+                          (disparado{entry.dispatchedAt ? ` em ${formatDateTimeBr(entry.dispatchedAt)}` : ""})
+                        </span>
+                      ) : (
+                        <span className="ml-1 text-amber-800">(ainda não disparado)</span>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+                {item.keepActive && item.recurrenceLastRunAt ? (
+                  <p className="mt-1">Último disparo recorrente: {formatDateTimeBr(item.recurrenceLastRunAt)}</p>
+                ) : null}
+                {item.targetUsername ? <p>Perfil alvo: @{item.targetUsername}</p> : null}
+                <div className="mt-2 flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => void toggleScheduleStatus(item)}
+                    className="rounded border border-slate-300 px-2 py-1 hover:bg-white"
+                    disabled={formBusy}
+                  >
+                    {item.status === "active" ? "Pausar" : "Ativar"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void removeSchedule(item)}
+                    className="rounded border border-rose-200 px-2 py-1 text-rose-700 hover:bg-rose-50"
+                    disabled={formBusy}
+                  >
+                    Excluir
+                  </button>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+    )
+  }
+
   if (!activeSessionId) {
     return (
       <div className="max-w-2xl rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
@@ -475,7 +897,7 @@ export function ActiveSessionPage() {
           {incomingWebhookStatus ? (
             <p className="text-xs text-slate-500">
               Último envio: <strong>{incomingWebhookStatus === "ok" ? "sucesso" : "erro"}</strong>
-              {incomingWebhookLastSentAt ? ` em ${new Date(incomingWebhookLastSentAt).toLocaleString()}` : ""}
+              {incomingWebhookLastSentAt ? ` em ${formatDateTimeBr(incomingWebhookLastSentAt)}` : ""}
             </p>
           ) : null}
           {incomingWebhookLastError ? (
@@ -548,6 +970,29 @@ export function ActiveSessionPage() {
               • Se ocorrer bloqueio de ação (Action Block), pause a automação por 24 a 48 horas.
             </p>
           </div>
+        </div>
+
+        <div className="mb-6 space-y-3 rounded-lg border border-slate-200 bg-slate-50 p-4">
+          <h4 className="text-sm font-semibold text-slate-800">Agendamento de AutoFollow</h4>
+          <p className="text-xs text-slate-600">
+            Selecione datas e quantidade por dia. O motor interno do backend executa automaticamente nos horários configurados.
+          </p>
+          {scheduleMessage ? <p className="text-sm text-emerald-700">{scheduleMessage}</p> : null}
+          {scheduleError ? <p className="text-sm text-rose-600">{scheduleError}</p> : null}
+          {renderSchedulePanel(
+            "Agenda: seguir sugeridos",
+            "suggested",
+            suggestedDraft,
+            setSuggestedDraft,
+            suggestedSchedules,
+          )}
+          {renderSchedulePanel(
+            "Agenda: seguir seguidores de perfil",
+            "followers",
+            followersDraft,
+            setFollowersDraft,
+            followersSchedules,
+          )}
         </div>
 
         <h4 className="mb-3 text-sm font-semibold text-slate-800">A partir de sugeridos (Explore)</h4>

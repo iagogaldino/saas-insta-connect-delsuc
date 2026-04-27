@@ -181,6 +181,81 @@ export async function getAutoFollowJobStatus(jobId: string) {
   return api.get<AutoFollowJobStatusResponse>(`/insta/auto-follow-jobs/${encodeURIComponent(jobId)}`)
 }
 
+export type FollowScheduleFlowType = "suggested" | "followers"
+export type FollowScheduleStatus = "active" | "paused" | "completed"
+
+export type FollowScheduleEntry = {
+  date: string
+  quantity: number
+  /** ISO quando o disparo daquele dia concluiu com sucesso. */
+  dispatchedAt: string | null
+  dispatched: boolean
+}
+
+export type FollowScheduleItem = {
+  id: string
+  flowType: FollowScheduleFlowType
+  privacyFilter: AutoFollowPrivacyFilter
+  targetUsername: string | null
+  status: FollowScheduleStatus
+  keepActive: boolean
+  weeklyDays: number[]
+  runTime: string
+  entries: FollowScheduleEntry[]
+  oneOffRemainingDates: string[]
+  nextRunAt: string | null
+  lastRunAt: string | null
+  lastRunStatus: string | null
+  lastRunError: string | null
+  /** Última execução bem-sucedida no modo recorrente. */
+  recurrenceLastRunAt: string | null
+  createdAt: string | null
+  updatedAt: string | null
+}
+
+export type CreateFollowScheduleEntry = { date: string; quantity: number }
+
+export type CreateFollowSchedulePayload = {
+  flowType: FollowScheduleFlowType
+  entries: CreateFollowScheduleEntry[]
+  privacyFilter: AutoFollowPrivacyFilter
+  targetUsername?: string
+  keepActive: boolean
+  weeklyDays: number[]
+  runTime: string
+}
+
+export type UpdateFollowSchedulePayload = Partial<{
+  entries: CreateFollowScheduleEntry[]
+  privacyFilter: AutoFollowPrivacyFilter
+  targetUsername: string
+  keepActive: boolean
+  weeklyDays: number[]
+  runTime: string
+  status: FollowScheduleStatus
+}>
+
+export async function postFollowSchedule(payload: CreateFollowSchedulePayload) {
+  return api.post<{ ok: true; schedule: FollowScheduleItem }>("/insta/follow-schedules", payload)
+}
+
+export async function getFollowSchedules(flowType?: FollowScheduleFlowType) {
+  return api.get<{ ok: true; schedules: FollowScheduleItem[] }>("/insta/follow-schedules", {
+    params: flowType ? { flowType } : undefined,
+  })
+}
+
+export async function patchFollowSchedule(scheduleId: string, payload: UpdateFollowSchedulePayload) {
+  return api.patch<{ ok: true; schedule: FollowScheduleItem }>(
+    `/insta/follow-schedules/${encodeURIComponent(scheduleId)}`,
+    payload,
+  )
+}
+
+export async function deleteFollowSchedule(scheduleId: string) {
+  return api.delete<{ ok: true }>(`/insta/follow-schedules/${encodeURIComponent(scheduleId)}`)
+}
+
 export type InstaPreviewProfileResponse = {
   ok: true
   found: boolean

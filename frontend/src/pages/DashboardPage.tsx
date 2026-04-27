@@ -2,6 +2,7 @@ import axios from "axios"
 import { BarChart3, Clock3, TrendingUp, Users } from "lucide-react"
 import { useEffect, useMemo, useState } from "react"
 import { postCreateIntegrationToken } from "../lib/auth"
+import { formatDateTimeBr } from "../lib/format-br"
 import { getFollowsMetrics, type FollowsMetricsResponse } from "../lib/insta"
 
 export function DashboardPage() {
@@ -184,7 +185,7 @@ export function DashboardPage() {
                   @{item.username} {item.fullName ? `- ${item.fullName}` : ""}
                 </p>
                 <p className="text-xs text-slate-500">
-                  {new Date(item.followedAt).toLocaleString()} • via{" "}
+                  {formatDateTimeBr(item.followedAt)} • via{" "}
                   {item.followedByInstagramUsername ? `@${item.followedByInstagramUsername}` : item.sessionId}
                 </p>
               </div>

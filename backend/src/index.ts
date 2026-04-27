@@ -9,6 +9,7 @@ import { connectDatabase } from "./config/database";
 import { env } from "./config/env";
 import { UserModel } from "./modules/auth/user.model";
 import { FollowHistoryModel } from "./modules/insta/follow-history.model";
+import { FollowScheduleModel } from "./modules/insta/follow-schedule.model";
 import { InstaSessionProfileModel } from "./modules/insta/session-profile.model";
 import { authRoutes } from "./modules/auth/auth.routes";
 import { requireAuth } from "./modules/auth/auth.middleware";
@@ -69,6 +70,8 @@ type IncomingWebhookPayload = {
 
 type AutoFollowJobType = "suggested" | "followers";
 type AutoFollowJobStatus = "pending" | "running" | "completed" | "failed";
+type FollowScheduleStatus = "active" | "paused" | "completed";
+type FollowScheduleFlowType = "suggested" | "followers";
 
 type AutoFollowJob = {
   id: string;
@@ -86,6 +89,11 @@ type AutoFollowJob = {
 function logInstaAuth(event: string, meta?: Record<string, unknown>): void {
   const payload = meta ? ` ${JSON.stringify(meta)}` : "";
   console.log(`[${new Date().toISOString()}] [insta-auth] ${event}${payload}`);
+}
+
+function logFollowSchedule(event: string, meta?: Record<string, unknown>): void {
+  const payload = meta ? ` ${JSON.stringify(meta)}` : "";
+  console.log(`[${new Date().toISOString()}] [follow-schedule] ${event}${payload}`);
 }
 
 function resolveChallengeFromLoginResult(result: { url?: string; challengeRequired?: boolean; challengeType?: unknown }) {
@@ -1524,6 +1532,142 @@ function normalizePrivacyFilter(value: unknown): "any" | "public" | "private" | 
   return privacyFilter as "any" | "public" | "private";
 }
 
+type FollowScheduleEntryInput = {
+  date: string;
+  quantity: number;
+};
+
+type FollowScheduleEntryWithDispatch = {
+  date: string;
+  quantity: number;
+  dispatchedAt?: Date | null;
+};
+
+type FollowScheduleDocLike = {
+  _id: { toString(): string };
+  userId: string;
+  sessionId: string;
+  flowType: FollowScheduleFlowType;
+  targetUsername?: string | null;
+  privacyFilter: "any" | "public" | "private";
+  entries: FollowScheduleEntryWithDispatch[];
+  keepActive: boolean;
+  weeklyDays: number[];
+  runAtHour: number;
+  runAtMinute: number;
+  oneOffRemainingDates: string[];
+  status: FollowScheduleStatus;
+  nextRunAt?: Date | null;
+  recurrenceLastRunAt?: Date | null;
+};
+
+function getSlotInstantUtc(dateKey: string, runAtHour: number, runAtMinute: number): Date | null {
+  const parsed = parseEntryDate(dateKey);
+  if (!parsed) return null;
+  parsed.setUTCHours(runAtHour, runAtMinute, 0, 0);
+  return parsed;
+}
+
+/** Primeiro dia em one-off ainda não disparado, cujo horário do slot já passou. */
+function resolveOneOffRunDateToExecute(schedule: FollowScheduleDocLike, now: Date): string | null {
+  if (schedule.keepActive) return null;
+  const sorted = [...schedule.oneOffRemainingDates].sort((a, b) => a.localeCompare(b));
+  for (const d of sorted) {
+    const slot = getSlotInstantUtc(d, schedule.runAtHour, schedule.runAtMinute);
+    if (!slot || slot.getTime() > now.getTime()) continue;
+    const entry = schedule.entries.find((e) => e.date === d);
+    if (entry?.dispatchedAt) continue;
+    if (!entry || entry.quantity < 1 || entry.quantity > 100) continue;
+    return d;
+  }
+  return null;
+}
+
+function normalizeDateKey(date: Date): string {
+  return date.toISOString().slice(0, 10);
+}
+
+function parseEntryDate(value: string): Date | null {
+  const trimmed = value.trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) return null;
+  const parsed = new Date(`${trimmed}T00:00:00.000Z`);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return parsed;
+}
+
+function normalizeScheduleEntries(input: unknown): FollowScheduleEntryInput[] | null {
+  if (!Array.isArray(input) || input.length === 0) return null;
+  const dedupe = new Map<string, number>();
+  for (const row of input) {
+    if (!row || typeof row !== "object") return null;
+    const item = row as Record<string, unknown>;
+    const dateRaw = typeof item.date === "string" ? item.date : "";
+    const quantity = Number(item.quantity);
+    const parsedDate = parseEntryDate(dateRaw);
+    if (!parsedDate || !Number.isFinite(quantity) || quantity < 1 || quantity > 100) {
+      return null;
+    }
+    dedupe.set(normalizeDateKey(parsedDate), Math.floor(quantity));
+  }
+  return [...dedupe.entries()]
+    .map(([date, quantity]) => ({ date, quantity }))
+    .sort((a, b) => a.date.localeCompare(b.date));
+}
+
+function normalizeWeeklyDays(value: unknown): number[] {
+  if (!Array.isArray(value)) return [];
+  const all = value
+    .map((v) => Number(v))
+    .filter((v) => Number.isInteger(v) && v >= 0 && v <= 6)
+    .map((v) => Number(v));
+  return [...new Set(all)].sort((a, b) => a - b);
+}
+
+function normalizeRunTime(value: unknown): { hour: number; minute: number } {
+  if (typeof value !== "string" || !/^\d{2}:\d{2}$/.test(value.trim())) {
+    return { hour: 10, minute: 0 };
+  }
+  const [h, m] = value.split(":").map((v) => Number(v));
+  if (!Number.isInteger(h) || h < 0 || h > 23 || !Number.isInteger(m) || m < 0 || m > 59) {
+    return { hour: 10, minute: 0 };
+  }
+  return { hour: h, minute: m };
+}
+
+function computeNextRunAt(schedule: FollowScheduleDocLike, from: Date): Date | null {
+  const base = new Date(from);
+  base.setSeconds(0, 0);
+
+  if (schedule.keepActive) {
+    if (schedule.weeklyDays.length === 0) return null;
+    for (let delta = 0; delta <= 14; delta += 1) {
+      const cand = new Date(base);
+      cand.setUTCDate(base.getUTCDate() + delta);
+      cand.setUTCHours(schedule.runAtHour, schedule.runAtMinute, 0, 0);
+      if (!schedule.weeklyDays.includes(cand.getUTCDay())) continue;
+      if (cand.getTime() <= from.getTime()) continue;
+      return cand;
+    }
+    return null;
+  }
+
+  const sorted = [...schedule.oneOffRemainingDates].sort((a, b) => a.localeCompare(b));
+  for (const d of sorted) {
+    const slot = getSlotInstantUtc(d, schedule.runAtHour, schedule.runAtMinute);
+    if (!slot) continue;
+    const entry = schedule.entries.find((e) => e.date === d);
+    if (entry?.dispatchedAt) continue;
+    if (slot.getTime() > from.getTime()) return slot;
+  }
+  for (const d of sorted) {
+    const entry = schedule.entries.find((e) => e.date === d);
+    if (entry?.dispatchedAt) continue;
+    if (!getSlotInstantUtc(d, schedule.runAtHour, schedule.runAtMinute)) continue;
+    return from;
+  }
+  return null;
+}
+
 async function persistFollowHistory(userId: string, sessionId: string, items: Array<{
   username: string;
   userId?: string;
@@ -1730,6 +1874,465 @@ app.get("/insta/auto-follow-jobs/:jobId", async (req, res) => {
   });
 });
 
+function serializeFollowSchedule(item: {
+  _id: { toString(): string };
+  flowType: FollowScheduleFlowType;
+  privacyFilter: "any" | "public" | "private";
+  targetUsername?: string | null;
+  status: FollowScheduleStatus;
+  keepActive: boolean;
+  weeklyDays: number[];
+  runAtHour: number;
+  runAtMinute: number;
+  entries: FollowScheduleEntryWithDispatch[];
+  oneOffRemainingDates: string[];
+  nextRunAt?: Date | null;
+  lastRunAt?: Date | null;
+  lastRunStatus?: string | null;
+  lastRunError?: string | null;
+  recurrenceLastRunAt?: Date | null;
+  createdAt?: Date;
+  updatedAt?: Date;
+}) {
+  return {
+    id: item._id.toString(),
+    flowType: item.flowType,
+    privacyFilter: item.privacyFilter,
+    targetUsername: item.targetUsername ?? null,
+    status: item.status,
+    keepActive: item.keepActive,
+    weeklyDays: item.weeklyDays,
+    runTime: `${String(item.runAtHour).padStart(2, "0")}:${String(item.runAtMinute).padStart(2, "0")}`,
+    entries: item.entries.map((e) => {
+      const at = e.dispatchedAt;
+      return {
+        date: e.date,
+        quantity: e.quantity,
+        dispatchedAt: at ? new Date(at).toISOString() : null,
+        dispatched: Boolean(at),
+      };
+    }),
+    oneOffRemainingDates: item.oneOffRemainingDates,
+    nextRunAt: item.nextRunAt?.toISOString() ?? null,
+    lastRunAt: item.lastRunAt?.toISOString() ?? null,
+    lastRunStatus: item.lastRunStatus ?? null,
+    lastRunError: item.lastRunError ?? null,
+    recurrenceLastRunAt: item.recurrenceLastRunAt ? new Date(item.recurrenceLastRunAt).toISOString() : null,
+    createdAt: item.createdAt?.toISOString() ?? null,
+    updatedAt: item.updatedAt?.toISOString() ?? null,
+  };
+}
+
+async function executeSingleFollowSchedule(schedule: FollowScheduleDocLike): Promise<void> {
+  const scheduleId = schedule._id.toString();
+  const runtime = getOrCreateInstaRuntimeBySessionId(schedule.sessionId);
+  const now = new Date();
+
+  let runDate: string;
+  let quantity: number;
+
+  if (schedule.keepActive) {
+    runDate = normalizeDateKey(now);
+    const todayEntry = schedule.entries.find((e) => e.date === runDate);
+    const fromEntry = todayEntry ?? schedule.entries[0];
+    if (!fromEntry || fromEntry.quantity < 1 || fromEntry.quantity > 100) {
+      logFollowSchedule("execute:skip-no-quantity", { scheduleId, runDate, keepActive: true, sessionId: schedule.sessionId });
+      throw new Error(`Sem quantidade válida no agendamento recorrente para a data ${runDate}.`);
+    }
+    quantity = fromEntry.quantity;
+  } else {
+    const resolved = resolveOneOffRunDateToExecute(schedule, now);
+    if (!resolved) {
+      logFollowSchedule("execute:skip-nothing-due", { scheduleId, sessionId: schedule.sessionId });
+      throw new Error("Nenhum slot one-off pendente (sem atraso ou já disparado).");
+    }
+    runDate = resolved;
+    const entry = schedule.entries.find((e) => e.date === runDate);
+    quantity = entry?.quantity ?? 0;
+    if (quantity < 1 || quantity > 100) {
+      throw new Error(`Quantidade inválida para a data ${runDate}.`);
+    }
+  }
+
+  logFollowSchedule("execute:start", {
+    scheduleId,
+    flowType: schedule.flowType,
+    sessionId: schedule.sessionId,
+    runDate,
+    keepActive: schedule.keepActive,
+    quantity,
+    targetUsername: schedule.targetUsername ?? null,
+  });
+
+  const job = createAutoFollowJob(schedule.userId, schedule.sessionId, schedule.flowType);
+  job.status = "running";
+  job.startedAt = now.toISOString();
+
+  let runError: string | null = null;
+  try {
+    if (schedule.flowType === "suggested") {
+      job.result = await runAutoFollowSuggestedJob(schedule.userId, runtime, quantity, schedule.privacyFilter);
+    } else {
+      const target = String(schedule.targetUsername ?? "").trim();
+      if (!target) {
+        throw new Error("Agenda de seguidores sem targetUsername.");
+      }
+      job.result = await runAutoFollowFollowersJob(schedule.userId, runtime, target, quantity, schedule.privacyFilter);
+    }
+    job.status = "completed";
+  } catch (e) {
+    job.status = "failed";
+    runError = e instanceof Error ? e.message : String(e);
+    job.error = runError;
+  } finally {
+    job.finishedAt = new Date().toISOString();
+  }
+
+  const success = !runError;
+  const nextEntries: FollowScheduleEntryWithDispatch[] = schedule.entries.map((e) => {
+    if (!schedule.keepActive && success && e.date === runDate) {
+      return { ...e, dispatchedAt: new Date() };
+    }
+    return { ...e };
+  });
+
+  const nextOneOff = schedule.keepActive
+    ? schedule.oneOffRemainingDates
+    : success
+      ? schedule.oneOffRemainingDates.filter((d) => d !== runDate)
+      : schedule.oneOffRemainingDates;
+
+  let nextRunAt = computeNextRunAt(
+    {
+      ...schedule,
+      entries: nextEntries,
+      oneOffRemainingDates: nextOneOff,
+    },
+    new Date(),
+  );
+  if (runError) {
+    nextRunAt = new Date(Date.now() + 60_000);
+  }
+
+  const statusResolved: FollowScheduleStatus = schedule.keepActive
+    ? nextRunAt
+      ? "active"
+      : "paused"
+    : nextOneOff.length === 0
+      ? "completed"
+      : nextRunAt
+        ? "active"
+        : "paused";
+
+  logFollowSchedule(runError ? "execute:done-failed" : "execute:done-ok", {
+    scheduleId,
+    jobId: job.id,
+    runError: runError ?? null,
+    nextStatus: statusResolved,
+    nextRunAt: nextRunAt?.toISOString() ?? null,
+    dispatched: success && !schedule.keepActive,
+  });
+
+  const patch: Record<string, unknown> = {
+    oneOffRemainingDates: nextOneOff,
+    entries: nextEntries,
+    status: statusResolved,
+    nextRunAt,
+    lastRunAt: new Date(),
+    lastRunStatus: runError ? "failed" : "completed",
+    lastRunError: runError,
+    lockedAt: null,
+    lockOwner: null,
+  };
+  if (schedule.keepActive && success) {
+    patch.recurrenceLastRunAt = new Date();
+  }
+
+  await FollowScheduleModel.updateOne(
+    { _id: schedule._id },
+    {
+      $set: patch,
+      $push: {
+        runLogs: {
+          $each: [
+            {
+              ranAt: new Date(),
+              success: !runError,
+              message: runError,
+            },
+          ],
+          $slice: -20,
+        },
+      },
+    },
+  );
+}
+
+const schedulerWorkerId = randomUUID();
+let schedulerTickInFlight = false;
+
+async function processDueFollowSchedulesTick(): Promise<void> {
+  if (schedulerTickInFlight) {
+    logFollowSchedule("tick:skipped-overlap", {});
+    return;
+  }
+  schedulerTickInFlight = true;
+  try {
+    const now = new Date();
+    const lockExpiration = new Date(now.getTime() - 5 * 60 * 1000);
+    const due = await FollowScheduleModel.find({
+      status: "active",
+      nextRunAt: { $lte: now },
+      $or: [{ lockedAt: null }, { lockedAt: { $lte: lockExpiration } }],
+    })
+      .sort({ nextRunAt: 1 })
+      .limit(10)
+      .lean();
+
+    logFollowSchedule("tick", { dueCount: due.length, at: now.toISOString() });
+
+    for (const candidate of due) {
+      const locked = await FollowScheduleModel.findOneAndUpdate(
+        {
+          _id: candidate._id,
+          status: "active",
+          nextRunAt: { $lte: new Date() },
+          $or: [{ lockedAt: null }, { lockedAt: { $lte: lockExpiration } }],
+        },
+        { $set: { lockedAt: new Date(), lockOwner: schedulerWorkerId } },
+        { new: true },
+      ).lean<FollowScheduleDocLike | null>();
+      if (!locked) {
+        logFollowSchedule("lock:miss", { scheduleId: String(candidate._id) });
+        continue;
+      }
+      logFollowSchedule("lock:acquired", { scheduleId: locked._id.toString(), nextRunAt: locked.nextRunAt?.toISOString() });
+      try {
+        await executeSingleFollowSchedule(locked);
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        logFollowSchedule("execute:exception", { scheduleId: locked._id.toString(), message });
+        await FollowScheduleModel.updateOne(
+          { _id: locked._id },
+          {
+            $set: {
+              lastRunAt: new Date(),
+              lastRunStatus: "failed",
+              lastRunError: message,
+              lockedAt: null,
+              lockOwner: null,
+              nextRunAt: computeNextRunAt(locked, new Date()) ?? new Date(Date.now() + 60_000),
+            },
+            $push: {
+              runLogs: {
+                $each: [{ ranAt: new Date(), success: false, message }],
+                $slice: -20,
+              },
+            },
+          },
+        );
+      }
+    }
+  } finally {
+    schedulerTickInFlight = false;
+  }
+}
+
+app.post("/insta/follow-schedules", async (req, res) => {
+  try {
+    const userId = req.authUser?.id;
+    if (!userId) {
+      res.status(401).json({ ok: false, error: "Unauthorized." });
+      return;
+    }
+
+    const runtime = await getInstaRuntimeOrSendError(req, res);
+    if (!runtime) return;
+
+    const flowType = req.body?.flowType === "followers" ? "followers" : req.body?.flowType === "suggested" ? "suggested" : null;
+    if (!flowType) {
+      res.status(400).json({ ok: false, error: "`flowType` deve ser `suggested` ou `followers`." });
+      return;
+    }
+    const privacyFilter = normalizePrivacyFilter(req.body?.privacyFilter);
+    if (!privacyFilter) {
+      res.status(400).json({ ok: false, error: "`privacyFilter` deve ser `any`, `public` ou `private`." });
+      return;
+    }
+
+    const entries = normalizeScheduleEntries(req.body?.entries);
+    if (!entries) {
+      res.status(400).json({ ok: false, error: "`entries` deve conter ao menos uma data válida com quantity (1..100)." });
+      return;
+    }
+
+    const keepActive = req.body?.keepActive === true;
+    const weeklyDays = keepActive ? normalizeWeeklyDays(req.body?.weeklyDays) : [];
+    if (keepActive && weeklyDays.length === 0) {
+      res.status(400).json({ ok: false, error: "Selecione ao menos um dia da semana para manter a agenda ativa." });
+      return;
+    }
+    const runAt = normalizeRunTime(req.body?.runTime);
+    const oneOffRemainingDates = entries.map((item) => item.date);
+
+    const targetUsername = typeof req.body?.targetUsername === "string" ? req.body.targetUsername.trim() : "";
+    if (flowType === "followers" && !targetUsername) {
+      res.status(400).json({ ok: false, error: "`targetUsername` é obrigatório para fluxo `followers`." });
+      return;
+    }
+
+    const schedule = await FollowScheduleModel.create({
+      userId,
+      sessionId: runtime.sessionId,
+      flowType,
+      privacyFilter,
+      targetUsername: flowType === "followers" ? targetUsername : null,
+      entries: entries.map((e) => ({ date: e.date, quantity: e.quantity, dispatchedAt: null })),
+      oneOffRemainingDates,
+      keepActive,
+      weeklyDays,
+      runAtHour: runAt.hour,
+      runAtMinute: runAt.minute,
+      status: "active",
+      nextRunAt: null,
+      lastRunAt: null,
+      lastRunStatus: null,
+      lastRunError: null,
+      runLogs: [],
+      recurrenceLastRunAt: null,
+    });
+
+    const computedNextRun = computeNextRunAt(schedule.toObject() as FollowScheduleDocLike, new Date());
+    const nextStatus: FollowScheduleStatus = computedNextRun ? "active" : "paused";
+    schedule.nextRunAt = computedNextRun;
+    schedule.status = nextStatus;
+    await schedule.save();
+
+    res.status(201).json({ ok: true, schedule: serializeFollowSchedule(schedule.toObject()) });
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    res.status(500).json({ ok: false, error: message });
+  }
+});
+
+app.get("/insta/follow-schedules", async (req, res) => {
+  try {
+    const userId = req.authUser?.id;
+    if (!userId) {
+      res.status(401).json({ ok: false, error: "Unauthorized." });
+      return;
+    }
+    const sessionId = typeof req.query.sessionId === "string" ? req.query.sessionId.trim() : "";
+    const flowType =
+      req.query.flowType === "suggested" || req.query.flowType === "followers"
+        ? (req.query.flowType as FollowScheduleFlowType)
+        : null;
+    const query: Record<string, unknown> = { userId };
+    if (sessionId) query.sessionId = sessionId;
+    if (flowType) query.flowType = flowType;
+    const rows = await FollowScheduleModel.find(query).sort({ createdAt: -1 }).lean();
+    res.json({ ok: true, schedules: rows.map((item) => serializeFollowSchedule(item)) });
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    res.status(500).json({ ok: false, error: message });
+  }
+});
+
+app.patch("/insta/follow-schedules/:scheduleId", async (req, res) => {
+  try {
+    const userId = req.authUser?.id;
+    if (!userId) {
+      res.status(401).json({ ok: false, error: "Unauthorized." });
+      return;
+    }
+    const scheduleId = typeof req.params.scheduleId === "string" ? req.params.scheduleId.trim() : "";
+    const current = await FollowScheduleModel.findOne({ _id: scheduleId, userId });
+    if (!current) {
+      res.status(404).json({ ok: false, error: "Agendamento não encontrado." });
+      return;
+    }
+
+    if (typeof req.body?.status === "string") {
+      if (req.body.status !== "active" && req.body.status !== "paused" && req.body.status !== "completed") {
+        res.status(400).json({ ok: false, error: "`status` inválido." });
+        return;
+      }
+      current.status = req.body.status;
+    }
+    if (typeof req.body?.privacyFilter !== "undefined") {
+      const privacy = normalizePrivacyFilter(req.body.privacyFilter);
+      if (!privacy) {
+        res.status(400).json({ ok: false, error: "`privacyFilter` inválido." });
+        return;
+      }
+      current.privacyFilter = privacy;
+    }
+    if (typeof req.body?.targetUsername === "string") {
+      current.targetUsername = req.body.targetUsername.trim() || null;
+    }
+    if (typeof req.body?.keepActive === "boolean") {
+      current.keepActive = req.body.keepActive;
+    }
+    if (Array.isArray(req.body?.weeklyDays)) {
+      current.weeklyDays = normalizeWeeklyDays(req.body.weeklyDays);
+    }
+    if (typeof req.body?.runTime !== "undefined") {
+      const runAt = normalizeRunTime(req.body.runTime);
+      current.runAtHour = runAt.hour;
+      current.runAtMinute = runAt.minute;
+    }
+    if (Array.isArray(req.body?.entries)) {
+      const entries = normalizeScheduleEntries(req.body.entries);
+      if (!entries) {
+        res.status(400).json({ ok: false, error: "`entries` inválido." });
+        return;
+      }
+      const prev = current.toObject() as { entries: FollowScheduleEntryWithDispatch[] };
+      const dispatchedByDate = new Map(
+        (prev.entries ?? []).map((e) => [e.date, e.dispatchedAt ?? null] as const),
+      );
+      const merged: FollowScheduleEntryWithDispatch[] = entries.map((e) => ({
+        date: e.date,
+        quantity: e.quantity,
+        dispatchedAt: dispatchedByDate.get(e.date) ?? null,
+      }));
+      (current as unknown as { entries: FollowScheduleEntryWithDispatch[] }).entries = merged;
+      current.oneOffRemainingDates = merged.filter((e) => !e.dispatchedAt).map((e) => e.date);
+    }
+
+    current.nextRunAt = computeNextRunAt(current.toObject() as FollowScheduleDocLike, new Date());
+    if (current.status === "active" && !current.nextRunAt) {
+      current.status = "paused";
+    }
+    await current.save();
+
+    res.json({ ok: true, schedule: serializeFollowSchedule(current.toObject()) });
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    res.status(500).json({ ok: false, error: message });
+  }
+});
+
+app.delete("/insta/follow-schedules/:scheduleId", async (req, res) => {
+  try {
+    const userId = req.authUser?.id;
+    if (!userId) {
+      res.status(401).json({ ok: false, error: "Unauthorized." });
+      return;
+    }
+    const scheduleId = typeof req.params.scheduleId === "string" ? req.params.scheduleId.trim() : "";
+    const deleted = await FollowScheduleModel.findOneAndDelete({ _id: scheduleId, userId }).lean();
+    if (!deleted) {
+      res.status(404).json({ ok: false, error: "Agendamento não encontrado." });
+      return;
+    }
+    res.json({ ok: true });
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    res.status(500).json({ ok: false, error: message });
+  }
+});
+
 /**
  * Body JSON: `{ "conversationTitle", "text", "dedicatedTab"?: boolean }` — título visível na inbox (igual a `listConversations`), texto da DM.
  * Requer sessão autenticada; a lib simula teclado no Web (pode levar ~15–25s).
@@ -1813,6 +2416,11 @@ app.post("/insta/realtime/dm-tap/stop", async (req, res) => {
 async function bootstrap() {
   try {
     await connectDatabase();
+    logFollowSchedule("scheduler:started", { intervalMs: 30_000, workerId: schedulerWorkerId });
+    setInterval(() => {
+      void processDueFollowSchedulesTick();
+    }, 30_000);
+    void processDueFollowSchedulesTick();
     app.listen(port, () => {
       console.log(`Server listening on http://127.0.0.1:${port}`);
     });

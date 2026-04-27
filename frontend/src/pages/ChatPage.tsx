@@ -110,7 +110,7 @@ export function ChatPage() {
       <div className="mx-auto max-w-lg rounded-xl border border-amber-200 bg-amber-50 p-6 text-center text-sm text-amber-900">
         Conecte o Instagram na sessão ativa no menu <strong>Instagram</strong> para abrir o chat.
         <div className="mt-3">
-          <Link to="/connect-instagram" className="font-medium text-amber-950 underline">
+          <Link to="/app/connect-instagram" className="font-medium text-amber-950 underline">
             Conectar
           </Link>
         </div>
@@ -129,7 +129,7 @@ export function ChatPage() {
       {!canSend ? (
         <div className="shrink-0 border-b border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900 sm:px-4">
           Sem título da conversa na URL.{" "}
-          <Link to="/conversas" className="font-medium underline">
+          <Link to="/app/conversas" className="font-medium underline">
             Abrir pela lista
           </Link>{" "}
           para enviar mensagens; visualização ainda funciona.
@@ -137,7 +137,7 @@ export function ChatPage() {
       ) : null}
       <div className="flex shrink-0 items-center gap-2 border-b border-slate-200 px-3 py-2 sm:px-4">
         <Link
-          to="/conversas"
+          to="/app/conversas"
           className="inline-flex items-center gap-1 rounded-lg p-1.5 text-slate-600 hover:bg-slate-100"
           aria-label="Voltar às conversas"
         >

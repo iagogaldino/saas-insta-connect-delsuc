@@ -127,7 +127,7 @@ export type AutoFollowResponse = {
 }
 
 export async function postAutoFollowSuggested(quantity: number, privacyFilter: AutoFollowPrivacyFilter) {
-  return api.post<AutoFollowResponse>("/insta/auto-follow", { quantity, privacyFilter })
+  return api.post<AutoFollowJobAcceptedResponse>("/insta/auto-follow", { quantity, privacyFilter })
 }
 
 export type AutoFollowFollowersResponse = {
@@ -148,11 +148,37 @@ export async function postAutoFollowFollowers(
   quantity: number,
   privacyFilter: AutoFollowPrivacyFilter,
 ) {
-  return api.post<AutoFollowFollowersResponse>("/insta/auto-follow-followers", {
+  return api.post<AutoFollowJobAcceptedResponse>("/insta/auto-follow-followers", {
     targetUsername,
     quantity,
     privacyFilter,
   })
+}
+
+export type AutoFollowJobAcceptedResponse = {
+  ok: true
+  jobId: string
+  status: "pending" | "running" | "completed" | "failed"
+  createdAt: string
+}
+
+export type AutoFollowJobStatusResponse = {
+  ok: true
+  job: {
+    id: string
+    type: "suggested" | "followers"
+    status: "pending" | "running" | "completed" | "failed"
+    sessionId: string
+    createdAt: string
+    startedAt: string | null
+    finishedAt: string | null
+    error: string | null
+    result: AutoFollowResponse | AutoFollowFollowersResponse | null
+  }
+}
+
+export async function getAutoFollowJobStatus(jobId: string) {
+  return api.get<AutoFollowJobStatusResponse>(`/insta/auto-follow-jobs/${encodeURIComponent(jobId)}`)
 }
 
 export type InstaPreviewProfileResponse = {

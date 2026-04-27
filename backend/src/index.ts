@@ -19,9 +19,9 @@ const port = env.PORT;
 app.use(express.json());
 
 app.use((req, res, next) => {
-  res.setHeader("Access-Control-Allow-Origin", process.env.CORS_ORIGIN ?? "*");
+  res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Insta-Session-Id");
   if (req.method === "OPTIONS") {
     res.sendStatus(204);
     return;
@@ -39,6 +39,7 @@ type InstaRuntime = {
 };
 
 const instaRuntimes = new Map<string, InstaRuntime>();
+const autoFollowJobs = new Map<string, AutoFollowJob>();
 
 type UserSessionState = {
   sessionIds: string[];
@@ -64,6 +65,22 @@ type IncomingWebhookPayload = {
   senderUsername: string | null;
   receivedAt: string;
   raw: unknown;
+};
+
+type AutoFollowJobType = "suggested" | "followers";
+type AutoFollowJobStatus = "pending" | "running" | "completed" | "failed";
+
+type AutoFollowJob = {
+  id: string;
+  userId: string;
+  sessionId: string;
+  type: AutoFollowJobType;
+  status: AutoFollowJobStatus;
+  createdAt: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+  error: string | null;
+  result: unknown | null;
 };
 
 function logInstaAuth(event: string, meta?: Record<string, unknown>): void {
@@ -1498,176 +1515,219 @@ app.get("/insta/suggested-people", async (req, res) => {
   }
 });
 
-/** `POST /insta/auto-follow` — auto-follow de usuários sugeridos na sessão ativa. */
+function normalizePrivacyFilter(value: unknown): "any" | "public" | "private" | null {
+  const privacyFilter =
+    typeof value === "string" && value.trim().length > 0 ? value.trim().toLowerCase() : "any";
+  if (!["any", "public", "private"].includes(privacyFilter)) {
+    return null;
+  }
+  return privacyFilter as "any" | "public" | "private";
+}
+
+async function persistFollowHistory(userId: string, sessionId: string, items: Array<{
+  username: string;
+  userId?: string;
+  isPrivate?: boolean;
+  isVerified?: boolean | null;
+  fullName?: string | null;
+  href?: string | null;
+  profilePicUrl?: string | null;
+  reason?: string | null;
+  success: boolean;
+}>): Promise<void> {
+  const sessionProfile = await InstaSessionProfileModel.findOne({ userId, sessionId })
+    .select("instagramUsername")
+    .lean();
+  const followedRows = items
+    .filter((item) => item.success === true)
+    .map((item) => ({
+      userId,
+      sessionId,
+      username: item.username,
+      fullName: item.fullName ?? null,
+      profilePicUrl: item.profilePicUrl ?? null,
+      href: item.href ?? null,
+      instagramUserId: item.userId ?? null,
+      followedByInstagramUsername: sessionProfile?.instagramUsername ?? null,
+      isPrivate: typeof item.isPrivate === "boolean" ? item.isPrivate : null,
+      isVerified: typeof item.isVerified === "boolean" ? item.isVerified : null,
+      reason: item.reason ?? null,
+      followedAt: new Date(),
+    }));
+  if (followedRows.length > 0) {
+    await FollowHistoryModel.insertMany(followedRows, { ordered: false });
+  }
+}
+
+async function runAutoFollowSuggestedJob(userId: string, runtime: InstaRuntime, quantity: number, privacyFilter: "any" | "public" | "private") {
+  const client = runtime.client;
+  const result = await client.autoFollowSuggestedUsers(quantity, { privacyFilter });
+  const suggested = await client.listSuggestedPeople({ limit: 200 }).catch(() => ({ users: [] as Array<{
+    username: string;
+    fullName: string;
+    href: string;
+    userId?: string;
+    reason?: string;
+    isVerified?: boolean;
+    isPrivate?: boolean;
+    profilePicUrl?: string;
+  }> }));
+  const byUsername = new Map(suggested.users.map((u) => [String(u.username || "").toLowerCase(), u] as const));
+  const enrichedResults = result.results.map((item) => {
+    const meta = byUsername.get(String(item.username || "").toLowerCase());
+    return {
+      ...item,
+      fullName: meta?.fullName ?? null,
+      href: meta?.href ?? null,
+      profilePicUrl: meta?.profilePicUrl ?? null,
+      isVerified: typeof meta?.isVerified === "boolean" ? meta.isVerified : null,
+      reason: meta?.reason ?? null,
+    };
+  });
+  await persistFollowHistory(userId, runtime.sessionId, enrichedResults);
+  return { ok: true, ...result, results: enrichedResults };
+}
+
+async function runAutoFollowFollowersJob(
+  userId: string,
+  runtime: InstaRuntime,
+  targetUsername: string,
+  quantity: number,
+  privacyFilter: "any" | "public" | "private",
+) {
+  const client = runtime.client;
+  const result = await client.autoFollowFollowersOfUser(targetUsername, quantity, { privacyFilter });
+  const enrichedResults = result.results.map((item) => {
+    const uname = String(item.username || "").trim();
+    return {
+      ...item,
+      fullName: null as string | null,
+      href: uname ? `https://www.instagram.com/${uname}/` : null,
+      profilePicUrl: null as string | null,
+      isVerified: null as boolean | null,
+      reason: null as string | null,
+    };
+  });
+  await persistFollowHistory(userId, runtime.sessionId, enrichedResults);
+  return { ok: true, ...result, results: enrichedResults };
+}
+
+function createAutoFollowJob(userId: string, sessionId: string, type: AutoFollowJobType): AutoFollowJob {
+  const job: AutoFollowJob = {
+    id: randomUUID(),
+    userId,
+    sessionId,
+    type,
+    status: "pending",
+    createdAt: new Date().toISOString(),
+    startedAt: null,
+    finishedAt: null,
+    error: null,
+    result: null,
+  };
+  autoFollowJobs.set(job.id, job);
+  return job;
+}
+
+function runAutoFollowJobInBackground(job: AutoFollowJob, task: () => Promise<unknown>) {
+  void (async () => {
+    job.status = "running";
+    job.startedAt = new Date().toISOString();
+    try {
+      job.result = await task();
+      job.status = "completed";
+    } catch (e) {
+      job.status = "failed";
+      job.error = e instanceof Error ? e.message : String(e);
+    } finally {
+      job.finishedAt = new Date().toISOString();
+    }
+  })();
+}
+
+/** `POST /insta/auto-follow` — cria job assíncrono de auto-follow por sugeridos. */
 app.post("/insta/auto-follow", async (req, res) => {
   const runtime = await getInstaRuntimeOrSendError(req, res);
   if (!runtime) return;
-  const client = runtime.client;
-  const quantityRaw = req.body?.quantity;
-  const privacyFilterRaw = req.body?.privacyFilter;
-
-  const quantity = Number(quantityRaw);
+  const userId = req.authUser?.id;
+  if (!userId) {
+    res.status(401).json({ ok: false, error: "Unauthorized." });
+    return;
+  }
+  const quantity = Number(req.body?.quantity);
   if (!Number.isFinite(quantity) || quantity < 1 || quantity > 100) {
     res.status(400).json({ ok: false, error: "`quantity` deve ser um número entre 1 e 100." });
     return;
   }
-
-  const privacyFilter =
-    typeof privacyFilterRaw === "string" && privacyFilterRaw.trim().length > 0
-      ? privacyFilterRaw.trim().toLowerCase()
-      : "any";
-  if (!["any", "public", "private"].includes(privacyFilter)) {
+  const privacyFilter = normalizePrivacyFilter(req.body?.privacyFilter);
+  if (!privacyFilter) {
     res.status(400).json({ ok: false, error: "`privacyFilter` deve ser `any`, `public` ou `private`." });
     return;
   }
 
-  try {
-    const result = await client.autoFollowSuggestedUsers(quantity, { privacyFilter });
-
-    // Enriquece os resultados com metadados visuais vindos das sugestões (quando disponíveis).
-    const suggested = await client.listSuggestedPeople({ limit: 200 }).catch(() => ({ users: [] as Array<{
-      username: string;
-      fullName: string;
-      href: string;
-      userId?: string;
-      reason?: string;
-      isVerified?: boolean;
-      isPrivate?: boolean;
-      profilePicUrl?: string;
-    }> }));
-    const byUsername = new Map(
-      suggested.users.map((u) => [String(u.username || "").toLowerCase(), u] as const),
-    );
-
-    const enrichedResults = result.results.map((item) => {
-      const meta = byUsername.get(String(item.username || "").toLowerCase());
-      return {
-        ...item,
-        fullName: meta?.fullName ?? null,
-        href: meta?.href ?? null,
-        profilePicUrl: meta?.profilePicUrl ?? null,
-        isVerified: typeof meta?.isVerified === "boolean" ? meta.isVerified : null,
-        reason: meta?.reason ?? null,
-      };
-    });
-
-    const userId = req.authUser?.id;
-    if (userId) {
-      const sessionProfile = await InstaSessionProfileModel.findOne({
-        userId,
-        sessionId: runtime.sessionId,
-      })
-        .select("instagramUsername")
-        .lean();
-      const followedRows = enrichedResults
-        .filter((item) => item.success === true)
-        .map((item) => ({
-          userId,
-          sessionId: runtime.sessionId,
-          username: item.username,
-          fullName: item.fullName ?? null,
-          profilePicUrl: item.profilePicUrl ?? null,
-          href: item.href ?? null,
-          instagramUserId: item.userId ?? null,
-          followedByInstagramUsername: sessionProfile?.instagramUsername ?? null,
-          isPrivate: typeof item.isPrivate === "boolean" ? item.isPrivate : null,
-          isVerified: typeof item.isVerified === "boolean" ? item.isVerified : null,
-          reason: item.reason ?? null,
-          followedAt: new Date(),
-        }));
-      if (followedRows.length > 0) {
-        await FollowHistoryModel.insertMany(followedRows, { ordered: false });
-      }
-    }
-
-    res.json({ ok: true, headless, ...result, results: enrichedResults });
-  } catch (e) {
-    const message = e instanceof Error ? e.message : String(e);
-    res.status(500).json({ ok: false, error: message });
-  }
+  const job = createAutoFollowJob(userId, runtime.sessionId, "suggested");
+  runAutoFollowJobInBackground(job, () => runAutoFollowSuggestedJob(userId, runtime, quantity, privacyFilter));
+  res.status(202).json({ ok: true, jobId: job.id, status: job.status, createdAt: job.createdAt });
 });
 
-/** `POST /insta/auto-follow-followers` — segue N seguidores de um perfil alvo (API web de followers). */
+/** `POST /insta/auto-follow-followers` — cria job assíncrono para seguidores de perfil. */
 app.post("/insta/auto-follow-followers", async (req, res) => {
   const runtime = await getInstaRuntimeOrSendError(req, res);
   if (!runtime) return;
-  const client = runtime.client;
-  const targetRaw = req.body?.targetUsername;
-  const targetUsername = typeof targetRaw === "string" ? targetRaw.trim() : "";
-  if (!targetUsername) {
-    res
-      .status(400)
-      .json({ ok: false, error: "`targetUsername` é obrigatório (string não vazia)." });
+  const userId = req.authUser?.id;
+  if (!userId) {
+    res.status(401).json({ ok: false, error: "Unauthorized." });
     return;
   }
-
-  const quantityRaw = req.body?.quantity;
-  const privacyFilterRaw = req.body?.privacyFilter;
-
-  const quantity = Number(quantityRaw);
+  const targetUsername = typeof req.body?.targetUsername === "string" ? req.body.targetUsername.trim() : "";
+  if (!targetUsername) {
+    res.status(400).json({ ok: false, error: "`targetUsername` é obrigatório (string não vazia)." });
+    return;
+  }
+  const quantity = Number(req.body?.quantity);
   if (!Number.isFinite(quantity) || quantity < 1 || quantity > 100) {
     res.status(400).json({ ok: false, error: "`quantity` deve ser um número entre 1 e 100." });
     return;
   }
-
-  const privacyFilter =
-    typeof privacyFilterRaw === "string" && privacyFilterRaw.trim().length > 0
-      ? privacyFilterRaw.trim().toLowerCase()
-      : "any";
-  if (!["any", "public", "private"].includes(privacyFilter)) {
+  const privacyFilter = normalizePrivacyFilter(req.body?.privacyFilter);
+  if (!privacyFilter) {
     res.status(400).json({ ok: false, error: "`privacyFilter` deve ser `any`, `public` ou `private`." });
     return;
   }
 
-  try {
-    const result = await client.autoFollowFollowersOfUser(targetUsername, quantity, { privacyFilter });
+  const job = createAutoFollowJob(userId, runtime.sessionId, "followers");
+  runAutoFollowJobInBackground(job, () =>
+    runAutoFollowFollowersJob(userId, runtime, targetUsername, quantity, privacyFilter),
+  );
+  res.status(202).json({ ok: true, jobId: job.id, status: job.status, createdAt: job.createdAt });
+});
 
-    const enrichedResults = result.results.map((item) => {
-      const uname = String(item.username || "").trim();
-      return {
-        ...item,
-        fullName: null as string | null,
-        href: uname ? `https://www.instagram.com/${uname}/` : null,
-        profilePicUrl: null as string | null,
-        isVerified: null as boolean | null,
-        reason: null as string | null,
-      };
-    });
-
-    const userId = req.authUser?.id;
-    if (userId) {
-      const sessionProfile = await InstaSessionProfileModel.findOne({
-        userId,
-        sessionId: runtime.sessionId,
-      })
-        .select("instagramUsername")
-        .lean();
-      const followedRows = enrichedResults
-        .filter((item) => item.success === true)
-        .map((item) => ({
-          userId,
-          sessionId: runtime.sessionId,
-          username: item.username,
-          fullName: item.fullName ?? null,
-          profilePicUrl: item.profilePicUrl ?? null,
-          href: item.href ?? null,
-          instagramUserId: item.userId ?? null,
-          followedByInstagramUsername: sessionProfile?.instagramUsername ?? null,
-          isPrivate: typeof item.isPrivate === "boolean" ? item.isPrivate : null,
-          isVerified: typeof item.isVerified === "boolean" ? item.isVerified : null,
-          reason: item.reason ?? null,
-          followedAt: new Date(),
-        }));
-      if (followedRows.length > 0) {
-        await FollowHistoryModel.insertMany(followedRows, { ordered: false });
-      }
-    }
-
-    res.json({ ok: true, headless, ...result, results: enrichedResults });
-  } catch (e) {
-    const message = e instanceof Error ? e.message : String(e);
-    res.status(500).json({ ok: false, error: message });
+app.get("/insta/auto-follow-jobs/:jobId", async (req, res) => {
+  const userId = req.authUser?.id;
+  if (!userId) {
+    res.status(401).json({ ok: false, error: "Unauthorized." });
+    return;
   }
+  const jobId = typeof req.params.jobId === "string" ? req.params.jobId.trim() : "";
+  const job = autoFollowJobs.get(jobId);
+  if (!job || job.userId !== userId) {
+    res.status(404).json({ ok: false, error: "Job não encontrado." });
+    return;
+  }
+  res.json({
+    ok: true,
+    job: {
+      id: job.id,
+      type: job.type,
+      status: job.status,
+      sessionId: job.sessionId,
+      createdAt: job.createdAt,
+      startedAt: job.startedAt,
+      finishedAt: job.finishedAt,
+      error: job.error,
+      result: job.result,
+    },
+  });
 });
 
 /**
@@ -1708,9 +1768,7 @@ app.post("/insta/messages", async (req, res) => {
 app.get("/insta/realtime/dm", async (req, res) => {
   const runtime = await getInstaRuntimeOrSendError(req, res);
   if (!runtime) return;
-  const allowOrigin = process.env.CORS_ORIGIN ?? "*";
-  res.setHeader("Access-Control-Allow-Origin", allowOrigin);
-  res.setHeader("Vary", "Origin");
+  res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
   res.setHeader("Cache-Control", "no-cache, no-transform");
   res.setHeader("Connection", "keep-alive");

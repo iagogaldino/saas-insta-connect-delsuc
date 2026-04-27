@@ -1,0 +1,22 @@
+{
+  "name": "saas-insta-connect",
+  "private": true,
+  "version": "1.0.0",
+  "workspaces": [
+    "frontend",
+    "backend"
+  ],
+  "scripts": {
+    "dev": "concurrently \"npm run dev:backend\" \"npm run dev:frontend\"",
+    "dev:frontend": "npm run dev -w frontend",
+    "dev:backend": "npm run dev -w backend",
+    "build:frontend": "npm run build -w frontend",
+    "build:backend": "npm run build -w backend",
+    "build": "npm run build:frontend && npm run build:backend",
+    "start:backend": "npm run start -w backend",
+    "lint:frontend": "npm run lint -w frontend"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1"
+  }
+}

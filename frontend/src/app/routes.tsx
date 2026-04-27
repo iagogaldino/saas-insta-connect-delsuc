@@ -5,14 +5,16 @@ import { ConnectInstagramPage } from "../pages/ConnectInstagramPage"
 import { ActiveSessionPage } from "../pages/ActiveSessionPage"
 import { ChatPage } from "../pages/ChatPage"
 import { ConversasPage } from "../pages/ConversasPage"
+import { LandingPage } from "../pages/LandingPage"
 import { DashboardLayout } from "../components/layout/DashboardLayout"
 import { ProtectedRoute } from "../features/auth/protected-route"
 import { InstaConnectProvider } from "../features/insta/insta-connect-provider"
 
 export const router = createBrowserRouter([
+  { path: "/", element: <LandingPage /> },
   { path: "/login", element: <LoginPage /> },
   {
-    path: "/",
+    path: "/app",
     element: (
       <ProtectedRoute>
         <InstaConnectProvider>

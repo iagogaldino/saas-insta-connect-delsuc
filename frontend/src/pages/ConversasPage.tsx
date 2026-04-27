@@ -53,7 +53,7 @@ export function ConversasPage() {
           <strong> Instagram</strong>.
         </p>
         <Link
-          to="/connect-instagram"
+          to="/app/connect-instagram"
           className="mt-4 inline-block rounded-lg bg-amber-900 px-4 py-2 text-sm font-medium text-white hover:bg-amber-950"
         >
           Conectar Instagram
@@ -125,7 +125,7 @@ export function ConversasPage() {
                 </li>
               )
             }
-            const chatTo = `/conversas/c/${encodeURIComponent(id)}?title=${encodeURIComponent(c.title)}`
+            const chatTo = `/app/conversas/c/${encodeURIComponent(id)}?title=${encodeURIComponent(c.title)}`
             return (
               <li key={c.href} className="flex items-stretch">
                 <Link

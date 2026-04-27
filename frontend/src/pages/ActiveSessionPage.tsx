@@ -4,6 +4,7 @@ import { useEffect, useState, type FormEvent, type ReactNode } from "react"
 import { useNavigate } from "react-router-dom"
 import { useInstaConnect } from "../features/insta/use-insta-connect"
 import {
+  getAutoFollowJobStatus,
   getInstaPreviewProfile,
   postInstaIncomingWebhookTest,
   postAutoFollowFollowers,
@@ -230,6 +231,23 @@ export function ActiveSessionPage() {
     }
   }
 
+  async function waitForAutoFollowJobResult<T>(jobId: string): Promise<T> {
+    const started = Date.now()
+    while (true) {
+      const { data } = await getAutoFollowJobStatus(jobId)
+      if (data.job.status === "completed") {
+        return data.job.result as T
+      }
+      if (data.job.status === "failed") {
+        throw new Error(data.job.error ?? "A automação falhou no processamento em background.")
+      }
+      if (Date.now() - started > 30 * 60 * 1000) {
+        throw new Error("A automação excedeu o tempo máximo de espera (30 min).")
+      }
+      await new Promise((resolve) => setTimeout(resolve, 2000))
+    }
+  }
+
   async function handleSaveIncomingWebhook() {
     if (!activeSessionId) return
     setIncomingWebhookMessage(null)
@@ -288,7 +306,8 @@ export function ActiveSessionPage() {
     setIsSubmitting(true)
     try {
       const { data } = await postAutoFollowSuggested(quantity, privacyFilter)
-      setResult(data)
+      const finalResult = await waitForAutoFollowJobResult<AutoFollowResponse>(data.jobId)
+      setResult(finalResult)
     } catch (e) {
       if (axios.isAxiosError(e)) {
         const body = e.response?.data as { error?: string } | undefined
@@ -361,7 +380,8 @@ export function ActiveSessionPage() {
     }
     try {
       const { data } = await postAutoFollowFollowers(t, ffQuantity, ffPrivacy)
-      setFfResult(data)
+      const finalResult = await waitForAutoFollowJobResult<AutoFollowFollowersResponse>(data.jobId)
+      setFfResult(finalResult)
       setFfAwaitingConfirm(false)
       setFfPreview(null)
     } catch (e) {

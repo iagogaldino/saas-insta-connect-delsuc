@@ -14,7 +14,7 @@ export function LoginPage() {
 
   useEffect(() => {
     if (isAuthenticated) {
-      void navigate("/", { replace: true })
+      void navigate("/app", { replace: true })
     }
   }, [isAuthenticated, navigate])
 
@@ -25,7 +25,7 @@ export function LoginPage() {
     const result = isRegisterMode ? await register(email, password) : await login(email, password)
     setIsSubmitting(false)
     if (result.ok) {
-      void navigate("/", { replace: true })
+      void navigate("/app", { replace: true })
     } else {
       setError(result.error ?? "Não foi possível concluir a autenticação.")
     }

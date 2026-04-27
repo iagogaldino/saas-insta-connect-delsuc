@@ -13,11 +13,11 @@ export function Sidebar() {
         <span className="text-lg font-semibold tracking-tight text-white">InstagramConnect</span>
       </div>
       <nav className="flex flex-1 flex-col gap-0.5 p-3" aria-label="Navegação principal">
-        <NavLink to="/" className={linkClass} end>
+        <NavLink to="/app" className={linkClass} end>
           <LayoutDashboard className="h-4 w-4 shrink-0" aria-hidden />
           Dashboard
         </NavLink>
-        <NavLink to="/connect-instagram" className={linkClass}>
+        <NavLink to="/app/connect-instagram" className={linkClass}>
           <AtSign className="h-4 w-4 shrink-0" aria-hidden />
           Instagram
         </NavLink>

@@ -1,0 +1,19 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: insta-connect-backend
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      PORT: 3000
+      INSTA_HEADLESS: 1
+    ports:
+      - "3000:3000"
+    volumes:
+      - backend_sessions:/app/.session
+
+volumes:
+  backend_sessions:

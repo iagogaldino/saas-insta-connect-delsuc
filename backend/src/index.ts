@@ -31,6 +31,21 @@ app.use((req, res, next) => {
 });
 
 const headless = process.env.INSTA_HEADLESS === "1" || process.env.INSTA_HEADLESS === "true";
+const disableChromeSandbox = env.INSTA_DISABLE_CHROME_SANDBOX;
+
+function withInstaLaunchOptions(launch: { args?: string[]; slowMo?: number }) {
+  const nextArgs = Array.isArray(launch.args) ? [...launch.args] : [];
+  if (disableChromeSandbox) {
+    if (!nextArgs.includes("--no-sandbox")) nextArgs.push("--no-sandbox");
+    if (!nextArgs.includes("--disable-setuid-sandbox")) nextArgs.push("--disable-setuid-sandbox");
+    if (!nextArgs.includes("--disable-dev-shm-usage")) nextArgs.push("--disable-dev-shm-usage");
+  }
+  return {
+    ...launch,
+    slowMo: 0,
+    args: nextArgs,
+  };
+}
 
 type InstaRuntime = {
   sessionId: string;
@@ -545,7 +560,7 @@ function getOrCreateInstaRuntimeBySessionId(sessionId: string): InstaRuntime {
         seenMessagesFile: `.session/${sessionId}/seen-message-ids.json`,
         headless,
       },
-      (launch) => ({ ...launch, slowMo: 0 }),
+      (launch) => withInstaLaunchOptions(launch),
     ),
     dmTapSseClients: new Set<Response>(),
     dmTapEnsurePromise: null,
@@ -1290,7 +1305,7 @@ app.get("/test/insta-connect", (_req, res) => {
 app.post("/test/insta-connect/launch", async (_req, res) => {
   const client = createInstaConnect(
     { basePath: process.cwd(), headless: true },
-    (launch) => ({ ...launch, slowMo: 0 }),
+    (launch) => withInstaLaunchOptions(launch),
   );
   try {
     await client.launch();

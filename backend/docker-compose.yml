@@ -10,6 +10,7 @@ services:
     environment:
       PORT: 3000
       INSTA_HEADLESS: 1
+      INSTA_DISABLE_CHROME_SANDBOX: 1
     ports:
       - "3000:3000"
     volumes:

@@ -9,6 +9,7 @@ import { LandingPage } from "../pages/LandingPage"
 import { DashboardLayout } from "../components/layout/DashboardLayout"
 import { ProtectedRoute } from "../features/auth/protected-route"
 import { InstaConnectProvider } from "../features/insta/insta-connect-provider"
+import { appBasePath } from "../lib/config"
 
 export const router = createBrowserRouter([
   { path: "/", element: <LandingPage /> },
@@ -31,4 +32,6 @@ export const router = createBrowserRouter([
     ],
   },
   { path: "*", element: <Navigate to="/" replace /> },
-])
+], {
+  basename: appBasePath,
+})

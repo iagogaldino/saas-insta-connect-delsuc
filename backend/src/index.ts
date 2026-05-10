@@ -14,6 +14,10 @@ import { InstaSessionProfileModel } from "./modules/insta/session-profile.model"
 import {
   computeNextRunAtZoned,
   dateKeyInTimeZone,
+  FOLLOW_SCHEDULE_INTERVAL_MAX_MINUTES,
+  FOLLOW_SCHEDULE_INTERVAL_MIN_MINUTES,
+  isIntervalSchedule,
+  normalizeIntervalMinutes,
   normalizeScheduleTimeZoneInput,
   resolveOneOffRunDateToExecuteZoned,
   resolveScheduleTimeZone,
@@ -1672,8 +1676,13 @@ type FollowScheduleDocLike = {
   oneOffRemainingDates: string[];
   status: FollowScheduleStatus;
   nextRunAt?: Date | null;
+  lastRunAt?: Date | null;
   recurrenceLastRunAt?: Date | null;
+  intervalMinutes?: number | null;
+  intervalFirstRunAt?: Date | null;
   scheduleTimeZone?: string | null;
+  stopAfterTotalFollowed?: number | null;
+  followedCountTotal?: number;
 };
 
 function parseEntryDate(value: string): Date | null {
@@ -1723,9 +1732,103 @@ function normalizeRunTime(value: unknown): { hour: number; minute: number } {
   return { hour: h, minute: m };
 }
 
+function parseIntervalFirstRunAtIso(raw: unknown): Date | null {
+  if (raw === null || raw === undefined || raw === "") {
+    return null;
+  }
+  if (typeof raw !== "string") {
+    return null;
+  }
+  const d = new Date(raw.trim());
+  if (Number.isNaN(d.getTime())) {
+    return null;
+  }
+  return d;
+}
+
+function oneOffDatesFromEntries(entries: FollowScheduleEntryWithDispatch[]): string[] {
+  return entries
+    .filter((e) => !e.dispatchedAt)
+    .map((e) => e.date)
+    .sort((a, b) => a.localeCompare(b));
+}
+
+const STOP_AFTER_TOTAL_FOLLOWED_MAX = 1_000_000;
+
+function pickStopAfterTotalFollowedFromBody(body: Record<string, unknown>): {
+  value: number | null;
+  error: string | null;
+} {
+  const key = "stopAfterTotalFollowed";
+  if (!(key in body)) {
+    return { value: null, error: null };
+  }
+  const raw = body[key];
+  if (raw === null || raw === undefined || raw === "") {
+    return { value: null, error: null };
+  }
+  const n = typeof raw === "number" ? raw : Number(raw);
+  if (!Number.isFinite(n)) {
+    return { value: null, error: "`stopAfterTotalFollowed` deve ser um número inteiro válido." };
+  }
+  const f = Math.floor(n);
+  if (f < 1 || f > STOP_AFTER_TOTAL_FOLLOWED_MAX) {
+    return {
+      value: null,
+      error: `\`stopAfterTotalFollowed\` deve estar entre 1 e ${STOP_AFTER_TOTAL_FOLLOWED_MAX}.`,
+    };
+  }
+  return { value: f, error: null };
+}
+
+function isFollowScheduleCapSatisfied(schedule: FollowScheduleDocLike): boolean {
+  const cap = schedule.stopAfterTotalFollowed;
+  if (cap == null || typeof cap !== "number" || cap < 1) {
+    return false;
+  }
+  return (schedule.followedCountTotal ?? 0) >= cap;
+}
+
+function followedCountFromAutoFollowJobResult(result: unknown): number {
+  if (!result || typeof result !== "object") {
+    return 0;
+  }
+  const f = Number((result as { followed?: unknown }).followed);
+  if (!Number.isFinite(f)) {
+    return 0;
+  }
+  return Math.max(0, Math.floor(f));
+}
+
+function pickIntervalMinutesFromBody(body: Record<string, unknown>): {
+  value: number | null;
+  error: string | null;
+} {
+  const key = "intervalMinutes";
+  if (!(key in body)) {
+    return { value: null, error: null };
+  }
+  const raw = body[key];
+  if (raw === null || raw === undefined || raw === "") {
+    return { value: null, error: null };
+  }
+  const n = normalizeIntervalMinutes(raw);
+  if (n === null) {
+    return {
+      value: null,
+      error: `\`intervalMinutes\` deve ser um inteiro ≥ ${FOLLOW_SCHEDULE_INTERVAL_MIN_MINUTES} (limite superior ${FOLLOW_SCHEDULE_INTERVAL_MAX_MINUTES} min).`,
+    };
+  }
+  return { value: n, error: null };
+}
+
 function computeNextRunAt(schedule: FollowScheduleDocLike, from: Date): Date | null {
   return computeNextRunAtZoned(
     {
+      intervalMinutes: schedule.intervalMinutes ?? null,
+      intervalFirstRunAt: schedule.intervalFirstRunAt ?? null,
+      recurrenceLastRunAt: schedule.recurrenceLastRunAt ?? null,
+      lastRunAt: schedule.lastRunAt ?? null,
       keepActive: schedule.keepActive,
       weeklyDays: schedule.weeklyDays,
       runAtHour: schedule.runAtHour,
@@ -1955,6 +2058,8 @@ function serializeFollowSchedule(item: {
   runAtHour: number;
   runAtMinute: number;
   scheduleTimeZone?: string | null;
+  intervalMinutes?: number | null;
+  intervalFirstRunAt?: Date | null;
   entries: FollowScheduleEntryWithDispatch[];
   oneOffRemainingDates: string[];
   nextRunAt?: Date | null;
@@ -1962,9 +2067,18 @@ function serializeFollowSchedule(item: {
   lastRunStatus?: string | null;
   lastRunError?: string | null;
   recurrenceLastRunAt?: Date | null;
+  stopAfterTotalFollowed?: number | null;
+  followedCountTotal?: number;
   createdAt?: Date;
   updatedAt?: Date;
 }) {
+  const intervalMinutes =
+    typeof item.intervalMinutes === "number" && item.intervalMinutes > 0 ? item.intervalMinutes : null;
+  const stopCap =
+    typeof item.stopAfterTotalFollowed === "number" && item.stopAfterTotalFollowed > 0
+      ? Math.floor(item.stopAfterTotalFollowed)
+      : null;
+  const followedAccum = typeof item.followedCountTotal === "number" ? Math.max(0, Math.floor(item.followedCountTotal)) : 0;
   return {
     id: item._id.toString(),
     flowType: item.flowType,
@@ -1975,6 +2089,8 @@ function serializeFollowSchedule(item: {
     weeklyDays: item.weeklyDays,
     runTime: `${String(item.runAtHour).padStart(2, "0")}:${String(item.runAtMinute).padStart(2, "0")}`,
     timeZone: resolveScheduleTimeZone(item.scheduleTimeZone),
+    intervalMinutes,
+    intervalFirstRunAt: item.intervalFirstRunAt ? new Date(item.intervalFirstRunAt).toISOString() : null,
     entries: item.entries.map((e) => {
       const at = e.dispatchedAt;
       return {
@@ -1990,6 +2106,8 @@ function serializeFollowSchedule(item: {
     lastRunStatus: item.lastRunStatus ?? null,
     lastRunError: item.lastRunError ?? null,
     recurrenceLastRunAt: item.recurrenceLastRunAt ? new Date(item.recurrenceLastRunAt).toISOString() : null,
+    stopAfterTotalFollowed: stopCap,
+    followedCountTotal: followedAccum,
     createdAt: item.createdAt?.toISOString() ?? null,
     updatedAt: item.updatedAt?.toISOString() ?? null,
   };
@@ -1997,13 +2115,40 @@ function serializeFollowSchedule(item: {
 
 async function executeSingleFollowSchedule(schedule: FollowScheduleDocLike): Promise<void> {
   const scheduleId = schedule._id.toString();
+
+  if (isFollowScheduleCapSatisfied(schedule)) {
+    logFollowSchedule("execute:skip-cap-already-met", {
+      scheduleId,
+      followedCountTotal: schedule.followedCountTotal ?? 0,
+      stopAfterTotalFollowed: schedule.stopAfterTotalFollowed ?? null,
+    });
+    await FollowScheduleModel.updateOne(
+      { _id: schedule._id },
+      { $set: { status: "completed", nextRunAt: null, lockedAt: null, lockOwner: null } },
+    );
+    return;
+  }
+
   const runtime = getOrCreateInstaRuntimeBySessionId(schedule.sessionId);
   const now = new Date();
+  const intervalMode = isIntervalSchedule(schedule);
 
   let runDate: string;
   let quantity: number;
 
-  if (schedule.keepActive) {
+  if (intervalMode) {
+    const first = schedule.entries[0];
+    if (!first || first.quantity < 1 || first.quantity > 100) {
+      logFollowSchedule("execute:skip-no-quantity", {
+        scheduleId,
+        intervalMode: true,
+        sessionId: schedule.sessionId,
+      });
+      throw new Error("Modo intervalo: é necessário ao menos uma entrada com quantity entre 1 e 100.");
+    }
+    quantity = first.quantity;
+    runDate = dateKeyInTimeZone(now, schedule.scheduleTimeZone);
+  } else if (schedule.keepActive) {
     runDate = dateKeyInTimeZone(now, schedule.scheduleTimeZone);
     const todayEntry = schedule.entries.find((e) => e.date === runDate);
     const fromEntry = todayEntry ?? schedule.entries[0];
@@ -2032,6 +2177,7 @@ async function executeSingleFollowSchedule(schedule: FollowScheduleDocLike): Pro
     sessionId: schedule.sessionId,
     runDate,
     keepActive: schedule.keepActive,
+    intervalMode,
     quantity,
     targetUsername: schedule.targetUsername ?? null,
   });
@@ -2062,39 +2208,59 @@ async function executeSingleFollowSchedule(schedule: FollowScheduleDocLike): Pro
 
   const success = !runError;
   const nextEntries: FollowScheduleEntryWithDispatch[] = schedule.entries.map((e) => {
-    if (!schedule.keepActive && success && e.date === runDate) {
+    if (!schedule.keepActive && !intervalMode && success && e.date === runDate) {
       return { ...e, dispatchedAt: new Date() };
     }
     return { ...e };
   });
 
-  const nextOneOff = schedule.keepActive
+  const nextOneOff = intervalMode
     ? schedule.oneOffRemainingDates
-    : success
-      ? schedule.oneOffRemainingDates.filter((d) => d !== runDate)
-      : schedule.oneOffRemainingDates;
+    : schedule.keepActive
+      ? schedule.oneOffRemainingDates
+      : success
+        ? schedule.oneOffRemainingDates.filter((d) => d !== runDate)
+        : schedule.oneOffRemainingDates;
 
+  const justAfter = new Date();
+  const followedThisRun = success ? followedCountFromAutoFollowJobResult(job.result) : 0;
+  const newFollowedTotal = Math.max(0, (schedule.followedCountTotal ?? 0) + followedThisRun);
   let nextRunAt = computeNextRunAt(
     {
       ...schedule,
       entries: nextEntries,
       oneOffRemainingDates: nextOneOff,
+      ...(intervalMode && success
+        ? { recurrenceLastRunAt: justAfter, intervalFirstRunAt: null }
+        : {}),
     },
-    new Date(),
+    justAfter,
   );
   if (runError) {
     nextRunAt = new Date(Date.now() + 60_000);
   }
 
-  const statusResolved: FollowScheduleStatus = schedule.keepActive
+  let statusResolved: FollowScheduleStatus = intervalMode
     ? nextRunAt
       ? "active"
       : "paused"
-    : nextOneOff.length === 0
-      ? "completed"
-      : nextRunAt
+    : schedule.keepActive
+      ? nextRunAt
         ? "active"
-        : "paused";
+        : "paused"
+      : nextOneOff.length === 0
+        ? "completed"
+        : nextRunAt
+          ? "active"
+          : "paused";
+
+  const capDone =
+    Boolean(success && schedule.stopAfterTotalFollowed != null && typeof schedule.stopAfterTotalFollowed === "number") &&
+    newFollowedTotal >= (schedule.stopAfterTotalFollowed as number);
+  if (capDone) {
+    statusResolved = "completed";
+    nextRunAt = null;
+  }
 
   logFollowSchedule(runError ? "execute:done-failed" : "execute:done-ok", {
     scheduleId,
@@ -2102,10 +2268,14 @@ async function executeSingleFollowSchedule(schedule: FollowScheduleDocLike): Pro
     runError: runError ?? null,
     nextStatus: statusResolved,
     nextRunAt: nextRunAt?.toISOString() ?? null,
-    dispatched: success && !schedule.keepActive,
+    dispatched: success && !schedule.keepActive && !intervalMode,
+    followedThisRun,
+    newFollowedTotal,
+    stopCapReached: capDone,
   });
 
   const patch: Record<string, unknown> = {
+    followedCountTotal: newFollowedTotal,
     oneOffRemainingDates: nextOneOff,
     entries: nextEntries,
     status: statusResolved,
@@ -2116,8 +2286,11 @@ async function executeSingleFollowSchedule(schedule: FollowScheduleDocLike): Pro
     lockedAt: null,
     lockOwner: null,
   };
-  if (schedule.keepActive && success) {
+  if (success && (schedule.keepActive || intervalMode)) {
     patch.recurrenceLastRunAt = new Date();
+  }
+  if (intervalMode && success) {
+    patch.intervalFirstRunAt = null;
   }
 
   await FollowScheduleModel.updateOne(
@@ -2148,6 +2321,18 @@ async function realignAllFollowScheduleNextRunAt(): Promise<void> {
   const rows = await FollowScheduleModel.find({}).lean();
   for (const row of rows) {
     const doc = row as FollowScheduleDocLike;
+    if (isFollowScheduleCapSatisfied(doc)) {
+      await FollowScheduleModel.updateOne(
+        { _id: row._id },
+        {
+          $set: {
+            status: "completed" as FollowScheduleStatus,
+            nextRunAt: null,
+          },
+        },
+      );
+      continue;
+    }
     const next = computeNextRunAt(doc, new Date());
     let nextStatus: FollowScheduleStatus = doc.status;
     if (doc.status === "active" && !next) {
@@ -2286,14 +2471,62 @@ app.post("/insta/follow-schedules", async (req, res) => {
       return;
     }
 
-    const keepActive = req.body?.keepActive === true;
-    const weeklyDays = keepActive ? normalizeWeeklyDays(req.body?.weeklyDays) : [];
+    const bodyRecord = req.body as Record<string, unknown>;
+    const { value: parsedIntervalMinutes, error: intervalParseError } = pickIntervalMinutesFromBody(bodyRecord);
+    if (intervalParseError) {
+      res.status(400).json({ ok: false, error: intervalParseError });
+      return;
+    }
+    const { value: parsedStopCap, error: stopCapError } = pickStopAfterTotalFollowedFromBody(bodyRecord);
+    if (stopCapError) {
+      res.status(400).json({ ok: false, error: stopCapError });
+      return;
+    }
+    const intervalMode = parsedIntervalMinutes !== null;
+
+    const keepActiveReq = req.body?.keepActive === true;
+    const weeklyDaysRequested = normalizeWeeklyDays(req.body?.weeklyDays);
+    const keepActive = intervalMode ? false : keepActiveReq;
+    const weeklyDays = keepActive ? weeklyDaysRequested : [];
+
+    if (intervalMode) {
+      if (keepActiveReq) {
+        res.status(400).json({
+          ok: false,
+          error: "`keepActive` (recorrência semanal) não pode ser combinado com `intervalMinutes`.",
+        });
+        return;
+      }
+      if (weeklyDaysRequested.length > 0) {
+        res.status(400).json({
+          ok: false,
+          error: "`weeklyDays` não pode ser combinado com `intervalMinutes`.",
+        });
+        return;
+      }
+    }
+
     if (keepActive && weeklyDays.length === 0) {
       res.status(400).json({ ok: false, error: "Selecione ao menos um dia da semana para manter a agenda ativa." });
       return;
     }
     const runAt = normalizeRunTime(req.body?.runTime);
-    const oneOffRemainingDates = entries.map((item) => item.date);
+    const oneOffRemainingDates = intervalMode ? [] : entries.map((item) => item.date);
+
+    let intervalFirstRunAt: Date | null = null;
+    if (intervalMode) {
+      const rawFirst = bodyRecord.intervalFirstRunAt;
+      intervalFirstRunAt = parseIntervalFirstRunAtIso(rawFirst);
+      if (rawFirst !== null && rawFirst !== undefined && rawFirst !== "") {
+        if (!intervalFirstRunAt) {
+          res.status(400).json({
+            ok: false,
+            error: "`intervalFirstRunAt` deve ser uma data ISO-8601 válida (UTC ou com offset).",
+          });
+          return;
+        }
+      }
+    }
 
     const targetUsername = typeof req.body?.targetUsername === "string" ? req.body.targetUsername.trim() : "";
     if (flowType === "followers" && !targetUsername) {
@@ -2318,6 +2551,8 @@ app.post("/insta/follow-schedules", async (req, res) => {
       runAtHour: runAt.hour,
       runAtMinute: runAt.minute,
       scheduleTimeZone,
+      intervalMinutes: intervalMode ? parsedIntervalMinutes : null,
+      intervalFirstRunAt: intervalMode ? intervalFirstRunAt : null,
       status: "active",
       nextRunAt: null,
       lastRunAt: null,
@@ -2325,6 +2560,8 @@ app.post("/insta/follow-schedules", async (req, res) => {
       lastRunError: null,
       runLogs: [],
       recurrenceLastRunAt: null,
+      stopAfterTotalFollowed: parsedStopCap,
+      followedCountTotal: 0,
     });
 
     const computedNextRun = computeNextRunAt(schedule.toObject() as FollowScheduleDocLike, new Date());
@@ -2427,12 +2664,100 @@ app.patch("/insta/follow-schedules/:scheduleId", async (req, res) => {
         dispatchedAt: dispatchedByDate.get(e.date) ?? null,
       }));
       (current as unknown as { entries: FollowScheduleEntryWithDispatch[] }).entries = merged;
-      current.oneOffRemainingDates = merged.filter((e) => !e.dispatchedAt).map((e) => e.date);
+      const provisionalAfterEntries = current.toObject() as FollowScheduleDocLike;
+      if (isIntervalSchedule(provisionalAfterEntries)) {
+        current.oneOffRemainingDates = [];
+      } else {
+        current.oneOffRemainingDates = merged.filter((e) => !e.dispatchedAt).map((e) => e.date);
+      }
     }
 
-    current.nextRunAt = computeNextRunAt(current.toObject() as FollowScheduleDocLike, new Date());
-    if (current.status === "active" && !current.nextRunAt) {
-      current.status = "paused";
+    const patchBodyRecord = req.body as Record<string, unknown>;
+    if ("intervalMinutes" in patchBodyRecord) {
+      const { value: nextIntervalMinutes, error: intervalErr } = pickIntervalMinutesFromBody(patchBodyRecord);
+      if (intervalErr) {
+        res.status(400).json({ ok: false, error: intervalErr });
+        return;
+      }
+      (current as unknown as { intervalMinutes: number | null }).intervalMinutes = nextIntervalMinutes;
+      if (nextIntervalMinutes !== null) {
+        if (current.keepActive) {
+          res.status(400).json({
+            ok: false,
+            error: "`intervalMinutes` não pode ser combinado com `keepActive`. Desative a recorrência semanal primeiro.",
+          });
+          return;
+        }
+        if (normalizeWeeklyDays(current.weeklyDays).length > 0) {
+          res.status(400).json({
+            ok: false,
+            error: "`intervalMinutes` não pode ser combinado com `weeklyDays`. Limpe os dias da semana.",
+          });
+          return;
+        }
+        current.keepActive = false;
+        current.weeklyDays = [];
+        current.oneOffRemainingDates = [];
+      } else {
+        (current as unknown as { intervalFirstRunAt: Date | null }).intervalFirstRunAt = null;
+        current.oneOffRemainingDates = oneOffDatesFromEntries(
+          (current.toObject() as FollowScheduleDocLike).entries ?? [],
+        );
+      }
+    }
+    if (typeof patchBodyRecord.intervalFirstRunAt !== "undefined") {
+      const docInterval = (current as unknown as { intervalMinutes?: number | null }).intervalMinutes;
+      if (typeof docInterval !== "number" || docInterval <= 0) {
+        res.status(400).json({
+          ok: false,
+          error: "`intervalFirstRunAt` só se aplica quando `intervalMinutes` está definido.",
+        });
+        return;
+      }
+      const rawFirstPatch = patchBodyRecord.intervalFirstRunAt;
+      if (rawFirstPatch === null || rawFirstPatch === "") {
+        (current as unknown as { intervalFirstRunAt: Date | null }).intervalFirstRunAt = null;
+      } else {
+        const parsedFirst = parseIntervalFirstRunAtIso(rawFirstPatch);
+        if (!parsedFirst) {
+          res.status(400).json({
+            ok: false,
+            error: "`intervalFirstRunAt` deve ser uma data ISO-8601 válida (UTC ou com offset).",
+          });
+          return;
+        }
+        (current as unknown as { intervalFirstRunAt: Date | null }).intervalFirstRunAt = parsedFirst;
+      }
+    }
+    if ("stopAfterTotalFollowed" in patchBodyRecord) {
+      const { value: nextStopCap, error: stopCapPatchErr } = pickStopAfterTotalFollowedFromBody(patchBodyRecord);
+      if (stopCapPatchErr) {
+        res.status(400).json({ ok: false, error: stopCapPatchErr });
+        return;
+      }
+      (current as unknown as { stopAfterTotalFollowed: number | null }).stopAfterTotalFollowed = nextStopCap;
+    }
+
+    const afterPatchDoc = current.toObject() as FollowScheduleDocLike;
+    if (isIntervalSchedule(afterPatchDoc)) {
+      if (afterPatchDoc.keepActive || (afterPatchDoc.weeklyDays && afterPatchDoc.weeklyDays.length > 0)) {
+        res.status(400).json({
+          ok: false,
+          error: "Agendamento em modo intervalo não pode ter `keepActive` nem dias em `weeklyDays`.",
+        });
+        return;
+      }
+    }
+
+    const docLike = current.toObject() as FollowScheduleDocLike;
+    if (isFollowScheduleCapSatisfied(docLike)) {
+      current.status = "completed";
+      current.nextRunAt = null;
+    } else {
+      current.nextRunAt = computeNextRunAt(docLike, new Date());
+      if (current.status === "active" && !current.nextRunAt) {
+        current.status = "paused";
+      }
     }
     await current.save();
 

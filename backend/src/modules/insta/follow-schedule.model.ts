@@ -33,6 +33,17 @@ const followScheduleSchema = new Schema(
     runAtMinute: { type: Number, required: true, min: 0, max: 59, default: 0 },
     /** IANA: horário e dias da semana interpretados neste fuso (alinhado ao navegador quando enviado). */
     scheduleTimeZone: { type: String, required: false, default: null },
+    /**
+     * Modo intervalo: repetir a cada N minutos. `null` ou omitido mantém apenas datas/recorrência semanal.
+     * Incompatível com `keepActive` / `weeklyDays`.
+     */
+    intervalMinutes: { type: Number, required: false, default: null },
+    /** Opcional: primeiro disparo UTC; após usar, deve ser limpo no backend (só primeira execução). */
+    intervalFirstRunAt: { type: Date, required: false, default: null },
+    /** Parar após N seguidos acumulados (contagem de sucesso entre execuções). `null` = sem limite. */
+    stopAfterTotalFollowed: { type: Number, required: false, default: null },
+    /** Total de perfis seguidos com sucesso por este agendamento (soma do campo `followed` em cada run). */
+    followedCountTotal: { type: Number, required: true, default: 0, min: 0 },
     entries: { type: [followScheduleEntrySchema], default: [] },
     oneOffRemainingDates: { type: [String], default: [] },
     nextRunAt: { type: Date, required: false, default: null, index: true },

@@ -57,8 +57,65 @@ export function getSlotInstantZoned(
   return dt.toUTC().toJSDate();
 }
 
+/** Mínimo de 1 minuto; máximo alto só para limitar valores absurdos (~100 anos). */
+export const FOLLOW_SCHEDULE_INTERVAL_MIN_MINUTES = 1;
+export const FOLLOW_SCHEDULE_INTERVAL_MAX_MINUTES = 100 * 365 * 24 * 60;
+
+export function normalizeIntervalMinutes(value: unknown): number | null {
+  if (value === null || value === undefined || value === "") {
+    return null;
+  }
+  const n = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(n) || n <= 0) {
+    return null;
+  }
+  const floored = Math.floor(n);
+  if (floored < FOLLOW_SCHEDULE_INTERVAL_MIN_MINUTES || floored > FOLLOW_SCHEDULE_INTERVAL_MAX_MINUTES) {
+    return null;
+  }
+  return floored;
+}
+
+export function isIntervalSchedule(schedule: { intervalMinutes?: number | null }): boolean {
+  return typeof schedule.intervalMinutes === "number" && schedule.intervalMinutes > 0;
+}
+
+export function computeNextRunAtInterval(
+  schedule: {
+    intervalMinutes: number;
+    intervalFirstRunAt?: Date | null;
+    recurrenceLastRunAt?: Date | null;
+    lastRunAt?: Date | null;
+  },
+  from: Date,
+): Date {
+  const intervalMs = schedule.intervalMinutes * 60_000;
+  const first = schedule.intervalFirstRunAt ? new Date(schedule.intervalFirstRunAt) : null;
+  if (first && !Number.isNaN(first.getTime()) && first.getTime() > from.getTime()) {
+    return first;
+  }
+  const anchor =
+    schedule.recurrenceLastRunAt && !Number.isNaN(new Date(schedule.recurrenceLastRunAt).getTime())
+      ? new Date(schedule.recurrenceLastRunAt)
+      : schedule.lastRunAt && !Number.isNaN(new Date(schedule.lastRunAt).getTime())
+        ? new Date(schedule.lastRunAt)
+        : null;
+  if (!anchor) {
+    return from;
+  }
+  let next = anchor.getTime() + intervalMs;
+  while (next <= from.getTime()) {
+    next += intervalMs;
+  }
+  return new Date(next);
+}
+
 export function computeNextRunAtZoned(
   schedule: {
+    intervalMinutes?: number | null;
+    intervalFirstRunAt?: Date | null;
+    recurrenceLastRunAt?: Date | null;
+    lastRunAt?: Date | null;
     keepActive: boolean;
     weeklyDays: number[];
     runAtHour: number;
@@ -69,6 +126,18 @@ export function computeNextRunAtZoned(
   from: Date,
   timeZone: string | null | undefined,
 ): Date | null {
+  if (isIntervalSchedule(schedule)) {
+    return computeNextRunAtInterval(
+      {
+        intervalMinutes: schedule.intervalMinutes as number,
+        intervalFirstRunAt: schedule.intervalFirstRunAt ?? null,
+        recurrenceLastRunAt: schedule.recurrenceLastRunAt ?? null,
+        lastRunAt: schedule.lastRunAt ?? null,
+      },
+      from,
+    );
+  }
+
   const zone = resolveScheduleTimeZone(timeZone);
   const fromZ = DateTime.fromJSDate(from, { zone }).startOf("minute");
 
@@ -124,6 +193,7 @@ export function computeNextRunAtZoned(
 
 export function resolveOneOffRunDateToExecuteZoned(
   schedule: {
+    intervalMinutes?: number | null;
     keepActive: boolean;
     oneOffRemainingDates: string[];
     runAtHour: number;
@@ -133,6 +203,9 @@ export function resolveOneOffRunDateToExecuteZoned(
   now: Date,
   timeZone: string | null | undefined,
 ): string | null {
+  if (isIntervalSchedule(schedule)) {
+    return null;
+  }
   if (schedule.keepActive) {
     return null;
   }

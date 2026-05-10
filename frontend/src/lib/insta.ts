@@ -203,6 +203,10 @@ export type FollowScheduleItem = {
   runTime: string
   /** IANA: horário é interpretado neste fuso (enviado pelo navegador ao criar). */
   timeZone?: string
+  /** Repetição periódica (minutos). Ausente/`null` = apenas datas/semana. */
+  intervalMinutes?: number | null
+  /** Opcional: primeiro disparo planejado (ISO UTC). Após rodar pode voltar `null`. */
+  intervalFirstRunAt?: string | null
   entries: FollowScheduleEntry[]
   oneOffRemainingDates: string[]
   nextRunAt: string | null
@@ -211,6 +215,10 @@ export type FollowScheduleItem = {
   lastRunError: string | null
   /** Última execução bem-sucedida no modo recorrente. */
   recurrenceLastRunAt: string | null
+  /** Opcional: metas de seguidos acumulados para pausar o agendamento. */
+  stopAfterTotalFollowed?: number | null
+  /** Total de perfis já seguidos com sucesso por este agendamento. */
+  followedCountTotal?: number
   createdAt: string | null
   updatedAt: string | null
 }
@@ -227,6 +235,12 @@ export type CreateFollowSchedulePayload = {
   runTime: string
   /** Ex.: America/Sao_Paulo — alinha disparo ao horário local do usuário. */
   timeZone?: string
+  /** Repetição a cada N minutos (inteiro ≥ 1). Exclusivo com `keepActive` / `weeklyDays`. */
+  intervalMinutes?: number
+  /** Opcional: primeira execução (ISO 8601). */
+  intervalFirstRunAt?: string
+  /** Opcional: após esse total acumulado de seguidos (sucesso), o agendamento conclui. */
+  stopAfterTotalFollowed?: number
 }
 
 export type UpdateFollowSchedulePayload = Partial<{
@@ -238,6 +252,9 @@ export type UpdateFollowSchedulePayload = Partial<{
   runTime: string
   timeZone: string
   status: FollowScheduleStatus
+  intervalMinutes: number | null
+  intervalFirstRunAt: string | null
+  stopAfterTotalFollowed: number | null
 }>
 
 export async function postFollowSchedule(payload: CreateFollowSchedulePayload) {

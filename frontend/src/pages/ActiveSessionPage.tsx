@@ -33,13 +33,65 @@ type ResultPanelData = {
 
 type ScheduleDraftEntry = { date: string; quantity: number }
 
+type ScheduleCadence = "dates" | "interval"
+
 type ScheduleDraft = {
+  cadence: ScheduleCadence
   entries: ScheduleDraftEntry[]
   dateInput: string
   quantityInput: number
+  /** Ex.: 2 com unidade "hours" → 120 min (validado no envio). */
+  intervalValue: number
+  intervalUnit: "minutes" | "hours" | "days"
+  /** `datetime-local` vazio = primeiro disparo o quanto antes. */
+  intervalFirstRunAtInput: string
   runTime: string
   keepActive: boolean
   weeklyDays: number[]
+  /** Meta opcional para concluir o agendamento; vazio = sem limite. */
+  stopAfterFollowedInput: string
+}
+
+const SCHEDULE_STOP_CAP_MAX = 1_000_000
+
+/** Alinhado ao backend (`follow-schedule-time.ts`). */
+const FOLLOW_SCHEDULE_INTERVAL_MIN_MINUTES = 1
+const FOLLOW_SCHEDULE_INTERVAL_MAX_MINUTES = 100 * 365 * 24 * 60
+
+function formatFollowScheduleIntervalBr(totalMinutes: number): string {
+  const m = Math.floor(totalMinutes)
+  if (m >= 24 * 60 && m % (24 * 60) === 0) {
+    const d = m / (24 * 60)
+    return d === 1 ? "1 dia" : `${d} dias`
+  }
+  if (m >= 60 && m % 60 === 0) {
+    const h = m / 60
+    return h === 1 ? "1 hora" : `${h} horas`
+  }
+  return m === 1 ? "1 minuto" : `${m} minutos`
+}
+
+function draftIntervalToMinutes(draft: ScheduleDraft): number | null {
+  const raw = draft.intervalValue
+  const v = typeof raw === "number" && Number.isFinite(raw) ? Math.floor(raw) : NaN
+  if (!Number.isFinite(v) || v < 1) return null
+  let minutes: number
+  if (draft.intervalUnit === "minutes") minutes = v
+  else if (draft.intervalUnit === "hours") minutes = v * 60
+  else minutes = v * 24 * 60
+  if (minutes < FOLLOW_SCHEDULE_INTERVAL_MIN_MINUTES || minutes > FOLLOW_SCHEDULE_INTERVAL_MAX_MINUTES) {
+    return null
+  }
+  return minutes
+}
+
+/** Converte valor de `<input type="datetime-local" />` para ISO UTC. */
+function localDatetimeInputToIsoUtc(localValue: string): string | null {
+  const s = localValue.trim()
+  if (!s) return null
+  const t = new Date(s)
+  if (Number.isNaN(t.getTime())) return null
+  return t.toISOString()
 }
 
 const weekDays: Array<{ value: number; label: string }> = [
@@ -73,6 +125,12 @@ function isLocalDateTimeInThePast(ymd: string, hm: string): boolean {
   const t = new Date(`${ymd}T${hm}:00`)
   if (Number.isNaN(t.getTime())) return true
   return t.getTime() < Date.now()
+}
+
+function minLocalDatetimeForDatetimeLocalInput(): string {
+  const d = new Date()
+  const pad = (n: number) => String(n).padStart(2, "0")
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
 
 function AutoFollowResultsPanel({
@@ -236,20 +294,30 @@ export function ActiveSessionPage() {
   const [suggestedSchedules, setSuggestedSchedules] = useState<FollowScheduleItem[]>([])
   const [followersSchedules, setFollowersSchedules] = useState<FollowScheduleItem[]>([])
   const [suggestedDraft, setSuggestedDraft] = useState<ScheduleDraft>({
+    cadence: "dates",
     entries: [],
     dateInput: "",
     quantityInput: 20,
+    intervalValue: 1,
+    intervalUnit: "hours",
+    intervalFirstRunAtInput: "",
     runTime: "10:00",
     keepActive: false,
     weeklyDays: [],
+    stopAfterFollowedInput: "",
   })
   const [followersDraft, setFollowersDraft] = useState<ScheduleDraft>({
+    cadence: "dates",
     entries: [],
     dateInput: "",
     quantityInput: 20,
+    intervalValue: 1,
+    intervalUnit: "hours",
+    intervalFirstRunAtInput: "",
     runTime: "10:00",
     keepActive: false,
     weeklyDays: [],
+    stopAfterFollowedInput: "",
   })
 
   const formBusy =
@@ -347,25 +415,59 @@ export function ActiveSessionPage() {
     const setDraft = flowType === "suggested" ? setSuggestedDraft : setFollowersDraft
     setScheduleMessage(null)
     setScheduleError(null)
-    if (draft.entries.length === 0) {
-      setScheduleError("Adicione ao menos uma data no calendário.")
-      return
-    }
-    if (draft.keepActive && draft.weeklyDays.length === 0) {
-      setScheduleError("Para manter ativa, selecione ao menos um dia da semana.")
-      return
+    const intervalMode = draft.cadence === "interval"
+    if (!intervalMode) {
+      if (draft.entries.length === 0) {
+        setScheduleError("Adicione ao menos uma data no calendário.")
+        return
+      }
+      if (draft.keepActive && draft.weeklyDays.length === 0) {
+        setScheduleError("Para manter ativa, selecione ao menos um dia da semana.")
+        return
+      }
+      for (const e of draft.entries) {
+        if (isLocalDateTimeInThePast(e.date, draft.runTime)) {
+          setScheduleError(
+            `A combinação ${e.date} às ${draft.runTime} está no passado. Ajuste o horário de disparo ou as datas.`,
+          )
+          return
+        }
+      }
+    } else {
+      const mins = draftIntervalToMinutes(draft)
+      if (mins === null) {
+        setScheduleError(
+          `Informe um intervalo válido (${FOLLOW_SCHEDULE_INTERVAL_MIN_MINUTES} min a ${FOLLOW_SCHEDULE_INTERVAL_MAX_MINUTES / 60 / 24} dias).`,
+        )
+        return
+      }
+      if (draft.intervalFirstRunAtInput.trim()) {
+        const iso = localDatetimeInputToIsoUtc(draft.intervalFirstRunAtInput)
+        if (!iso) {
+          setScheduleError("Data/hora do primeiro disparo inválida.")
+          return
+        }
+        if (new Date(iso).getTime() < Date.now()) {
+          setScheduleError("O primeiro disparo deve ser no futuro.")
+          return
+        }
+      }
     }
     if (flowType === "followers" && !ffTarget.trim()) {
       setScheduleError("Informe o perfil alvo para agendamento de seguidores.")
       return
     }
-    for (const e of draft.entries) {
-      if (isLocalDateTimeInThePast(e.date, draft.runTime)) {
+    const capRaw = draft.stopAfterFollowedInput.trim()
+    let stopAfterPayload: number | undefined
+    if (capRaw) {
+      const n = Math.floor(Number(capRaw.replace(/\s+/g, "")))
+      if (!Number.isFinite(n) || n < 1 || n > SCHEDULE_STOP_CAP_MAX) {
         setScheduleError(
-          `A combinação ${e.date} às ${draft.runTime} está no passado. Ajuste o horário de disparo ou as datas.`,
+          `"Parar após": informe um número inteiro entre 1 e ${SCHEDULE_STOP_CAP_MAX.toLocaleString("pt-BR")}, ou deixe em branco.`,
         )
         return
       }
+      stopAfterPayload = n
     }
     setScheduleLoading(true)
     try {
@@ -392,23 +494,42 @@ export function ActiveSessionPage() {
         }
       }
 
+      const qty = Math.max(1, Math.min(100, Math.floor(draft.quantityInput || 1)))
+      const entriesPayload = intervalMode
+        ? [{ date: todayLocalYmd(), quantity: qty }]
+        : draft.entries
+      const intervalFirstIso = intervalMode ? localDatetimeInputToIsoUtc(draft.intervalFirstRunAtInput) : null
+      const intervalMinutesPayload = intervalMode ? draftIntervalToMinutes(draft)! : undefined
+
       await postFollowSchedule({
         flowType,
-        entries: draft.entries,
+        entries: entriesPayload,
         privacyFilter: flowType === "suggested" ? privacyFilter : ffPrivacy,
         targetUsername: followersResolvedUsername,
-        keepActive: draft.keepActive,
-        weeklyDays: draft.keepActive ? draft.weeklyDays : [],
+        keepActive: intervalMode ? false : draft.keepActive,
+        weeklyDays: intervalMode ? [] : draft.keepActive ? draft.weeklyDays : [],
         runTime: draft.runTime,
         timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+        ...(intervalMode
+          ? {
+              intervalMinutes: intervalMinutesPayload,
+              ...(intervalFirstIso ? { intervalFirstRunAt: intervalFirstIso } : {}),
+            }
+          : {}),
+        ...(stopAfterPayload !== undefined ? { stopAfterTotalFollowed: stopAfterPayload } : {}),
       })
       setDraft({
+        cadence: draft.cadence,
         entries: [],
         dateInput: "",
         quantityInput: 20,
+        intervalValue: draft.intervalValue,
+        intervalUnit: draft.intervalUnit,
+        intervalFirstRunAtInput: draft.intervalFirstRunAtInput,
         runTime: draft.runTime,
         keepActive: draft.keepActive,
         weeklyDays: draft.weeklyDays,
+        stopAfterFollowedInput: draft.stopAfterFollowedInput,
       })
       setScheduleMessage("Agendamento salvo com sucesso.")
       await refreshSchedules()
@@ -661,14 +782,53 @@ export function ActiveSessionPage() {
     const timeMin = draft.dateInput && draft.dateInput === minDate ? nowLocalHm() : undefined
     const slotInPast =
       Boolean(draft.dateInput) && isLocalDateTimeInThePast(draft.dateInput, draft.runTime)
-    const hasInvalidSavedSlot = draft.entries.some((e) => isLocalDateTimeInThePast(e.date, draft.runTime))
+    const hasInvalidSavedSlot =
+      draft.cadence === "dates" && draft.entries.some((e) => isLocalDateTimeInThePast(e.date, draft.runTime))
 
     return (
       <div className="space-y-3 rounded-lg border border-slate-200 p-4">
         <h5 className="text-sm font-semibold text-slate-800">{title}</h5>
-        <p className="text-xs text-slate-500">
-          Só é permitido agendar a partir de hoje; se a data for hoje, o horário precisa ser depois de agora.
-        </p>
+        {draft.cadence === "dates" ? (
+          <p className="text-xs text-slate-500">
+            Só é permitido agendar a partir de hoje; se a data for hoje, o horário precisa ser depois de agora.
+          </p>
+        ) : (
+          <p className="text-xs text-slate-500">
+            Modo intervalo: a automação repete com a cadência que você definir (minutos, horas ou dias). O horário fixo de
+            disparo único não se aplica a este modo.
+          </p>
+        )}
+        <div className="flex flex-wrap gap-4 text-sm text-slate-700">
+          <label className="inline-flex cursor-pointer items-center gap-2">
+            <input
+              type="radio"
+              name={`schedule-cadence-${flowType}`}
+              checked={draft.cadence === "dates"}
+              onChange={() => setDraft({ ...draft, cadence: "dates" })}
+              disabled={formBusy || !isSessionConnected}
+              className="border-slate-300 text-slate-900 focus:ring-slate-400"
+            />
+            Datas e horário fixo
+          </label>
+          <label className="inline-flex cursor-pointer items-center gap-2">
+            <input
+              type="radio"
+              name={`schedule-cadence-${flowType}`}
+              checked={draft.cadence === "interval"}
+              onChange={() =>
+                setDraft({
+                  ...draft,
+                  cadence: "interval",
+                  keepActive: false,
+                  weeklyDays: [],
+                })
+              }
+              disabled={formBusy || !isSessionConnected}
+              className="border-slate-300 text-slate-900 focus:ring-slate-400"
+            />
+            A cada intervalo
+          </label>
+        </div>
         {flowType === "followers" ? (
           <div className="space-y-3 rounded-md border border-slate-200 bg-slate-50/80 p-3">
             <div>
@@ -707,113 +867,197 @@ export function ActiveSessionPage() {
             </div>
           </div>
         ) : null}
-        <div className="flex flex-wrap items-end gap-2">
-          <div>
-            <label className="mb-1 block text-xs font-medium text-slate-600">Data</label>
-            <input
-              type="date"
-              value={draft.dateInput}
-              min={minDate}
-              onChange={(e) => {
-                const v = e.target.value
-                if (v && v < minDate) return
-                let runTime = draft.runTime
-                if (v === minDate && runTime < nowLocalHm()) {
-                  runTime = nowLocalHm()
-                }
-                setDraft({ ...draft, dateInput: v, runTime })
-              }}
-              disabled={formBusy || !isSessionConnected}
-              className="rounded-lg border border-slate-200 px-3 py-2 text-sm"
-            />
-          </div>
-          <div>
-            <label className="mb-1 block text-xs font-medium text-slate-600">Quantidade (1-100)</label>
-            <input
-              type="number"
-              min={1}
-              max={100}
-              value={draft.quantityInput}
-              onChange={(e) => setDraft({ ...draft, quantityInput: Number(e.target.value) })}
-              disabled={formBusy || !isSessionConnected}
-              className="w-28 rounded-lg border border-slate-200 px-3 py-2 text-sm"
-            />
-          </div>
-          <button
-            type="button"
-            onClick={() => addDateEntry(draft, setDraft)}
-            disabled={formBusy || !isSessionConnected || !draft.dateInput || slotInPast}
-            className="rounded-lg border border-slate-200 px-3 py-2 text-sm hover:bg-slate-50 disabled:opacity-60"
-          >
-            Adicionar data
-          </button>
-          <div>
-            <label className="mb-1 block text-xs font-medium text-slate-600">Horário de disparo</label>
-            <input
-              type="time"
-              value={draft.runTime}
-              min={timeMin}
-              onChange={(e) => {
-                let v = e.target.value
-                if (draft.dateInput === minDate && v < nowLocalHm()) {
-                  v = nowLocalHm()
-                }
-                setDraft({ ...draft, runTime: v })
-              }}
-              disabled={formBusy || !isSessionConnected}
-              className="rounded-lg border border-slate-200 px-3 py-2 text-sm"
-            />
-          </div>
-        </div>
-        <div className="space-y-1">
-          {draft.entries.length === 0 ? (
-            <p className="text-xs text-slate-500">Nenhuma data adicionada.</p>
-          ) : (
-            draft.entries.map((entry) => (
-              <div key={entry.date} className="flex items-center justify-between rounded border border-slate-200 px-3 py-2 text-sm">
-                <span>
-                  {formatIsoDateBr(entry.date)} — {entry.quantity} perfis
-                </span>
-                <button
-                  type="button"
-                  onClick={() => removeDateEntry(draft, setDraft, entry.date)}
-                  disabled={formBusy}
-                  className="text-rose-600 hover:underline disabled:opacity-60"
-                >
-                  remover
-                </button>
+        {draft.cadence === "interval" ? (
+          <div className="space-y-3 rounded-md border border-slate-200 bg-slate-50/80 p-3">
+            <div className="flex flex-wrap items-end gap-2">
+              <div>
+                <label className="mb-1 block text-xs font-medium text-slate-600">A cada</label>
+                <input
+                  type="number"
+                  min={1}
+                  value={draft.intervalValue}
+                  onChange={(e) => setDraft({ ...draft, intervalValue: Number(e.target.value) })}
+                  disabled={formBusy || !isSessionConnected}
+                  className="w-24 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm"
+                />
               </div>
-            ))
-          )}
-        </div>
-        <label className="inline-flex items-center gap-2 text-sm text-slate-700">
-          <input
-            type="checkbox"
-            checked={draft.keepActive}
-            onChange={(e) => setDraft({ ...draft, keepActive: e.target.checked })}
-            disabled={formBusy || !isSessionConnected}
-          />
-          Manter ativa (recorrência semanal)
-        </label>
-        {draft.keepActive ? (
-          <div className="flex flex-wrap gap-2">
-            {weekDays.map((day) => (
-              <button
-                key={day.value}
-                type="button"
-                onClick={() => toggleWeeklyDay(draft, setDraft, day.value)}
-                className={`rounded-md border px-2 py-1 text-xs ${
-                  draft.weeklyDays.includes(day.value)
-                    ? "border-slate-900 bg-slate-900 text-white"
-                    : "border-slate-200 text-slate-700 hover:bg-slate-50"
-                }`}
+              <div>
+                <label className="mb-1 block text-xs font-medium text-slate-600">Unidade</label>
+                <select
+                  value={draft.intervalUnit}
+                  onChange={(e) =>
+                    setDraft({ ...draft, intervalUnit: e.target.value as "minutes" | "hours" | "days" })
+                  }
+                  disabled={formBusy || !isSessionConnected}
+                  className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm"
+                >
+                  <option value="minutes">minutos</option>
+                  <option value="hours">horas</option>
+                  <option value="days">dias</option>
+                </select>
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-medium text-slate-600">Quantidade (1-100) por execução</label>
+                <input
+                  type="number"
+                  min={1}
+                  max={100}
+                  value={draft.quantityInput}
+                  onChange={(e) => setDraft({ ...draft, quantityInput: Number(e.target.value) })}
+                  disabled={formBusy || !isSessionConnected}
+                  className="w-28 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm"
+                />
+              </div>
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-medium text-slate-600">
+                Primeiro disparo (opcional, horário local)
+              </label>
+              <input
+                type="datetime-local"
+                min={minLocalDatetimeForDatetimeLocalInput()}
+                value={draft.intervalFirstRunAtInput}
+                onChange={(e) => setDraft({ ...draft, intervalFirstRunAtInput: e.target.value })}
                 disabled={formBusy || !isSessionConnected}
-              >
-                {day.label}
-              </button>
-            ))}
+                className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm"
+              />
+              <p className="mt-1 text-xs text-slate-500">Deixe vazio para disparar no próximo ciclo do agendador (em segundos).</p>
+            </div>
           </div>
-        ) : null}
+        ) : (
+          <>
+            <div className="flex flex-wrap items-end gap-2">
+              <div>
+                <label className="mb-1 block text-xs font-medium text-slate-600">Data</label>
+                <input
+                  type="date"
+                  value={draft.dateInput}
+                  min={minDate}
+                  onChange={(e) => {
+                    const v = e.target.value
+                    if (v && v < minDate) return
+                    let runTime = draft.runTime
+                    if (v === minDate && runTime < nowLocalHm()) {
+                      runTime = nowLocalHm()
+                    }
+                    setDraft({ ...draft, dateInput: v, runTime })
+                  }}
+                  disabled={formBusy || !isSessionConnected}
+                  className="rounded-lg border border-slate-200 px-3 py-2 text-sm"
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-medium text-slate-600">Quantidade (1-100)</label>
+                <input
+                  type="number"
+                  min={1}
+                  max={100}
+                  value={draft.quantityInput}
+                  onChange={(e) => setDraft({ ...draft, quantityInput: Number(e.target.value) })}
+                  disabled={formBusy || !isSessionConnected}
+                  className="w-28 rounded-lg border border-slate-200 px-3 py-2 text-sm"
+                />
+              </div>
+              <button
+                type="button"
+                onClick={() => addDateEntry(draft, setDraft)}
+                disabled={formBusy || !isSessionConnected || !draft.dateInput || slotInPast}
+                className="rounded-lg border border-slate-200 px-3 py-2 text-sm hover:bg-slate-50 disabled:opacity-60"
+              >
+                Adicionar data
+              </button>
+              <div>
+                <label className="mb-1 block text-xs font-medium text-slate-600">Horário de disparo</label>
+                <input
+                  type="time"
+                  value={draft.runTime}
+                  min={timeMin}
+                  onChange={(e) => {
+                    let v = e.target.value
+                    if (draft.dateInput === minDate && v < nowLocalHm()) {
+                      v = nowLocalHm()
+                    }
+                    setDraft({ ...draft, runTime: v })
+                  }}
+                  disabled={formBusy || !isSessionConnected}
+                  className="rounded-lg border border-slate-200 px-3 py-2 text-sm"
+                />
+              </div>
+            </div>
+            <div className="space-y-1">
+              {draft.entries.length === 0 ? (
+                <p className="text-xs text-slate-500">Nenhuma data adicionada.</p>
+              ) : (
+                draft.entries.map((entry) => (
+                  <div
+                    key={entry.date}
+                    className="flex items-center justify-between rounded border border-slate-200 px-3 py-2 text-sm"
+                  >
+                    <span>
+                      {formatIsoDateBr(entry.date)} — {entry.quantity} perfis
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => removeDateEntry(draft, setDraft, entry.date)}
+                      disabled={formBusy}
+                      className="text-rose-600 hover:underline disabled:opacity-60"
+                    >
+                      remover
+                    </button>
+                  </div>
+                ))
+              )}
+            </div>
+            <label className="inline-flex items-center gap-2 text-sm text-slate-700">
+              <input
+                type="checkbox"
+                checked={draft.keepActive}
+                onChange={(e) => setDraft({ ...draft, keepActive: e.target.checked })}
+                disabled={formBusy || !isSessionConnected}
+              />
+              Manter ativa (recorrência semanal)
+            </label>
+            {draft.keepActive ? (
+              <div className="flex flex-wrap gap-2">
+                {weekDays.map((day) => (
+                  <button
+                    key={day.value}
+                    type="button"
+                    onClick={() => toggleWeeklyDay(draft, setDraft, day.value)}
+                    className={`rounded-md border px-2 py-1 text-xs ${
+                      draft.weeklyDays.includes(day.value)
+                        ? "border-slate-900 bg-slate-900 text-white"
+                        : "border-slate-200 text-slate-700 hover:bg-slate-50"
+                    }`}
+                    disabled={formBusy || !isSessionConnected}
+                  >
+                    {day.label}
+                  </button>
+                ))}
+              </div>
+            ) : null}
+          </>
+        )}
+        <div className="rounded-md border border-dashed border-slate-300 bg-white p-3">
+          <label className="mb-1 block text-xs font-medium text-slate-600" htmlFor={`stop-cap-${flowType}`}>
+            Parar automaticamente após N seguidos (opcional)
+          </label>
+          <input
+            id={`stop-cap-${flowType}`}
+            type="number"
+            min={1}
+            max={SCHEDULE_STOP_CAP_MAX}
+            placeholder="Sem limite — deixe vazio"
+            value={draft.stopAfterFollowedInput}
+            onChange={(e) => setDraft({ ...draft, stopAfterFollowedInput: e.target.value })}
+            disabled={formBusy || !isSessionConnected}
+            className="w-full max-w-xs rounded-lg border border-slate-200 px-3 py-2 text-sm"
+          />
+          <p className="mt-1 text-xs text-slate-500">
+            Vale para este agendamento: somamos os perfis seguidos com sucesso em cada execução. Limite máximo{" "}
+            {SCHEDULE_STOP_CAP_MAX.toLocaleString("pt-BR")}.
+          </p>
+        </div>
         <button
           type="button"
           onClick={() => void createSchedule(flowType)}
@@ -835,15 +1079,41 @@ export function ActiveSessionPage() {
               <div key={item.id} className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-700">
                 <p>
                   Status: <strong>{item.status}</strong> · Próximo:{" "}
-                  {item.nextRunAt ? formatDateTimeBr(item.nextRunAt) : "não definido"} · Horário padrão:{" "}
-                  <code>{item.runTime}</code>
-                  {item.timeZone ? (
+                  {item.nextRunAt ? formatDateTimeBr(item.nextRunAt) : "não definido"}
+                  {item.intervalMinutes != null && item.intervalMinutes > 0 ? (
                     <>
                       {" "}
-                      · Fuso: <code>{item.timeZone}</code>
+                      · <strong>A cada {formatFollowScheduleIntervalBr(item.intervalMinutes)}</strong>
+                      {item.intervalFirstRunAt ? (
+                        <>
+                          {" "}
+                          · 1º disparo planejado: {formatDateTimeBr(item.intervalFirstRunAt)}
+                        </>
+                      ) : null}
                     </>
-                  ) : null}
+                  ) : (
+                    <>
+                      {" "}
+                      · Horário padrão: <code>{item.runTime}</code>
+                      {item.timeZone ? (
+                        <>
+                          {" "}
+                          · Fuso: <code>{item.timeZone}</code>
+                        </>
+                      ) : null}
+                    </>
+                  )}
                 </p>
+                {item.stopAfterTotalFollowed != null && item.stopAfterTotalFollowed > 0 ? (
+                  <p className="mt-1 text-slate-600">
+                    Seguidos (acumulado): <strong>{item.followedCountTotal ?? 0}</strong>
+                    {" "}
+                    / meta <strong>{item.stopAfterTotalFollowed}</strong>
+                    {(item.followedCountTotal ?? 0) >= item.stopAfterTotalFollowed ? (
+                      <span className="ml-1 font-medium text-emerald-700">— limite atingido</span>
+                    ) : null}
+                  </p>
+                ) : null}
                 <ul className="list-inside list-disc text-slate-600">
                   {item.entries.map((entry) => (
                     <li key={entry.date}>
@@ -852,14 +1122,16 @@ export function ActiveSessionPage() {
                         <span className="ml-1 text-emerald-700">
                           (disparado{entry.dispatchedAt ? ` em ${formatDateTimeBr(entry.dispatchedAt)}` : ""})
                         </span>
+                      ) : item.intervalMinutes != null && item.intervalMinutes > 0 ? (
+                        <span className="ml-1 text-slate-500">(referência de quantidade)</span>
                       ) : (
                         <span className="ml-1 text-amber-800">(ainda não disparado)</span>
                       )}
                     </li>
                   ))}
                 </ul>
-                {item.keepActive && item.recurrenceLastRunAt ? (
-                  <p className="mt-1">Último disparo recorrente: {formatDateTimeBr(item.recurrenceLastRunAt)}</p>
+                {(item.keepActive || (item.intervalMinutes != null && item.intervalMinutes > 0)) && item.recurrenceLastRunAt ? (
+                  <p className="mt-1">Última execução: {formatDateTimeBr(item.recurrenceLastRunAt)}</p>
                 ) : null}
                 {item.targetUsername ? <p>Perfil alvo: @{item.targetUsername}</p> : null}
                 <div className="mt-2 flex gap-2">

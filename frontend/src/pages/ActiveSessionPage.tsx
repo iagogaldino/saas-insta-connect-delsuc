@@ -369,11 +369,34 @@ export function ActiveSessionPage() {
     }
     setScheduleLoading(true)
     try {
+      let followersResolvedUsername: string | undefined
+      if (flowType === "followers") {
+        const t = ffTarget.replace(/^@+/, "").trim()
+        try {
+          const { data: preview } = await getInstaPreviewProfile(t)
+          if (!preview.found) {
+            setScheduleError(
+              "Não foi possível localizar este perfil. Confira o @ e tente de novo. Se tiver certeza que o @ existe, a API do Instagram pode ter bloqueado a verificação.",
+            )
+            return
+          }
+          followersResolvedUsername = preview.username
+        } catch (e) {
+          if (axios.isAxiosError(e)) {
+            const body = e.response?.data as { error?: string } | undefined
+            setScheduleError(body?.error ?? e.message)
+          } else {
+            setScheduleError(e instanceof Error ? e.message : "Não foi possível verificar o perfil.")
+          }
+          return
+        }
+      }
+
       await postFollowSchedule({
         flowType,
         entries: draft.entries,
         privacyFilter: flowType === "suggested" ? privacyFilter : ffPrivacy,
-        targetUsername: flowType === "followers" ? ffTarget.trim() : undefined,
+        targetUsername: followersResolvedUsername,
         keepActive: draft.keepActive,
         weeklyDays: draft.keepActive ? draft.weeklyDays : [],
         runTime: draft.runTime,
@@ -645,6 +668,44 @@ export function ActiveSessionPage() {
         <p className="text-xs text-slate-500">
           Só é permitido agendar a partir de hoje; se a data for hoje, o horário precisa ser depois de agora.
         </p>
+        {flowType === "followers" ? (
+          <div className="space-y-3 rounded-md border border-slate-200 bg-slate-50/80 p-3">
+            <div>
+              <label htmlFor="follow-schedule-target" className="mb-1 block text-xs font-medium text-slate-600">
+                Perfil alvo (@ cujos seguidores serão seguidos)
+              </label>
+              <input
+                id="follow-schedule-target"
+                type="text"
+                autoComplete="off"
+                placeholder="ex: nomedaconta"
+                value={ffTarget}
+                onChange={(e) => {
+                  setFfTarget(e.target.value)
+                  resetFollowersConfirmState()
+                }}
+                disabled={formBusy || !isSessionConnected}
+                className="w-full max-w-md rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm focus:border-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-300"
+              />
+            </div>
+            <div>
+              <label htmlFor="follow-schedule-privacy" className="mb-1 block text-xs font-medium text-slate-600">
+                Filtro de privacidade (agendamento)
+              </label>
+              <select
+                id="follow-schedule-privacy"
+                value={ffPrivacy}
+                onChange={(e) => setFfPrivacy(e.target.value as AutoFollowPrivacyFilter)}
+                disabled={formBusy || !isSessionConnected}
+                className="w-full max-w-xs rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm focus:border-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-300"
+              >
+                <option value="any">Qualquer perfil</option>
+                <option value="public">Somente públicos</option>
+                <option value="private">Somente privados</option>
+              </select>
+            </div>
+          </div>
+        ) : null}
         <div className="flex flex-wrap items-end gap-2">
           <div>
             <label className="mb-1 block text-xs font-medium text-slate-600">Data</label>

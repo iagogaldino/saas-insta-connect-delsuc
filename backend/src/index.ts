@@ -17,6 +17,9 @@ import { requireAuth } from "./modules/auth/auth.middleware";
 const app = express();
 const port = env.PORT;
 
+/** Pasta do pacote backend (`src/` ou `dist/` → um nível acima = raiz do backend). `process.cwd()` varia com monorepo/npm e quebrava o caminho `.session/`. */
+const BACKEND_ROOT = path.resolve(__dirname, "..");
+
 app.use(express.json());
 
 app.use((req, res, next) => {
@@ -367,8 +370,8 @@ async function isIncomingWebhookEnabledForSession(sessionId: string): Promise<bo
 
 async function cleanupSessionFiles(sessionId: string): Promise<void> {
   const targets = [
-    path.resolve(process.cwd(), ".session", sessionId),
-    path.resolve(process.cwd(), "..", "..", "lib-insta-connect", ".session", sessionId),
+    path.resolve(BACKEND_ROOT, ".session", sessionId),
+    path.resolve(BACKEND_ROOT, "..", "..", "lib-insta-connect", ".session", sessionId),
   ];
 
   await Promise.all(
@@ -510,6 +513,9 @@ async function removeUserSession(userId: string, sessionId: string): Promise<Use
       $set: {
         instaSessionIds: nextSessionIds,
       },
+      $pull: {
+        instaRestoreRuntimeSessionIds: sessionId,
+      },
       $unset: {
         activeInstaSessionId: "",
         instaSessionId: "",
@@ -521,6 +527,121 @@ async function removeUserSession(userId: string, sessionId: string): Promise<Use
     sessionIds: nextSessionIds,
     activeSessionId: nextActiveSessionId,
   };
+}
+
+function effectiveSessionIdsFromUserLean(u: {
+  instaSessionIds?: string[] | null;
+  instaSessionId?: string | null;
+  activeInstaSessionId?: string | null;
+}): string[] {
+  const fromArray = Array.isArray(u.instaSessionIds) ? u.instaSessionIds : [];
+  const fromLegacy = typeof u.instaSessionId === "string" ? u.instaSessionId : null;
+  const fromActive = typeof u.activeInstaSessionId === "string" ? u.activeInstaSessionId : null;
+  return uniqueSessionIds([...fromArray, fromLegacy, fromActive]);
+}
+
+async function markInstaRuntimeRestoreDesired(userId: string, sessionId: string): Promise<void> {
+  const r = await UserModel.updateOne({ _id: userId }, { $addToSet: { instaRestoreRuntimeSessionIds: sessionId } });
+  if (r.matchedCount === 0) {
+    logInstaAuth("runtime:restore-flag:no-user", { userId, sessionId });
+  }
+}
+
+async function clearInstaRuntimeRestoreDesired(userId: string, sessionId: string): Promise<void> {
+  await UserModel.updateOne({ _id: userId }, { $pull: { instaRestoreRuntimeSessionIds: sessionId } });
+}
+
+type StartInstaRuntimeResult = {
+  loginUrl: string;
+  isInstagramAuthenticated: boolean;
+  runtimeStatusMessage: string;
+};
+
+async function startInstaRuntimeForUser(userId: string, sessionId: string): Promise<StartInstaRuntimeResult> {
+  const runtime = getOrCreateInstaRuntimeBySessionId(sessionId);
+  await runtime.client.launch();
+  const loginUrl = await runtime.client.openLoginPage();
+  const isInstagramAuthenticated = !loginUrl.includes("/accounts/login");
+  const runtimeStatusMessage = isInstagramAuthenticated
+    ? "Instância ligada e sessão autenticada no Instagram."
+    : "Instância ligada, mas esta sessão não está logada no Instagram.";
+  if (!isInstagramAuthenticated) {
+    await markSessionRequiresRelogin(userId, sessionId, "runtime_started_but_not_authenticated");
+  }
+
+  let webhookListenerStarted = false;
+  let webhookListenerError: string | null = null;
+  if (isInstagramAuthenticated) {
+    const webhookEnabled = await isIncomingWebhookEnabledForSession(sessionId);
+    if (webhookEnabled) {
+      try {
+        await ensureDmTapForSse(runtime);
+        webhookListenerStarted = true;
+      } catch (e) {
+        webhookListenerError = e instanceof Error ? e.message : String(e);
+        logInstaAuth("incoming-webhook:listener-start-failed", {
+          userId,
+          sessionId,
+          error: webhookListenerError,
+        });
+      }
+    }
+  }
+
+  const runtimeStatusParts = [runtimeStatusMessage];
+  if (webhookListenerStarted) {
+    runtimeStatusParts.push("Escuta de mensagens para webhook iniciada.");
+  } else if (webhookListenerError) {
+    runtimeStatusParts.push(`Falha ao iniciar escuta de webhook: ${webhookListenerError}`);
+  }
+
+  return {
+    loginUrl,
+    isInstagramAuthenticated,
+    runtimeStatusMessage: runtimeStatusParts.join(" "),
+  };
+}
+
+async function restorePersistedInstaRuntimes(): Promise<void> {
+  logInstaAuth("runtime:boot-restore:begin", { backendRoot: BACKEND_ROOT });
+  const users = await UserModel.find({
+    $expr: { $gt: [{ $size: { $ifNull: ["$instaRestoreRuntimeSessionIds", []] } }, 0] },
+  })
+    .select("_id instaRestoreRuntimeSessionIds instaSessionIds instaSessionId activeInstaSessionId")
+    .lean();
+
+  logInstaAuth("runtime:boot-restore:users-matched", { count: users.length });
+
+  for (const u of users) {
+    const userId = String(u._id);
+    const allowed = new Set(effectiveSessionIdsFromUserLean(u));
+    const restoreList = u.instaRestoreRuntimeSessionIds ?? [];
+    const stale = restoreList.filter((id) => !allowed.has(id));
+    if (stale.length > 0) {
+      await UserModel.updateOne({ _id: u._id }, { $pull: { instaRestoreRuntimeSessionIds: { $in: stale } } });
+    }
+    const toRestore = restoreList.filter((id) => allowed.has(id));
+    for (const sessionId of toRestore) {
+      if (instaRuntimes.has(sessionId)) {
+        logInstaAuth("runtime:boot-restore:skip-already-in-memory", { userId, sessionId });
+        continue;
+      }
+      try {
+        logInstaAuth("runtime:boot-restore:start", { userId, sessionId });
+        await startInstaRuntimeForUser(userId, sessionId);
+        logInstaAuth("runtime:boot-restore:ok", { userId, sessionId });
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        logInstaAuth("runtime:boot-restore:failed", { userId, sessionId, error: message });
+      }
+    }
+  }
+
+  if (users.length === 0) {
+    logInstaAuth("runtime:boot-restore:empty", {
+      hint: "Nenhum id em instaRestoreRuntimeSessionIds. Chame POST /insta/sessions/:id/runtime/start ao menos uma vez após deploy para gravar a preferência.",
+    });
+  }
 }
 
 async function getInstaRuntimeForRequest(req: Request): Promise<InstaRuntime> {
@@ -554,7 +675,7 @@ function getOrCreateInstaRuntimeBySessionId(sessionId: string): InstaRuntime {
     sessionId,
     client: createInstaConnect(
       {
-        basePath: process.cwd(),
+        basePath: BACKEND_ROOT,
         // Sessão dedicada por usuário, persistida em disco para próximos logins.
         sessionDir: `.session/${sessionId}/chrome-profile`,
         seenMessagesFile: `.session/${sessionId}/seen-message-ids.json`,
@@ -751,47 +872,16 @@ app.post("/insta/sessions/:sessionId/runtime/start", async (req, res) => {
       return;
     }
 
-    const runtime = getOrCreateInstaRuntimeBySessionId(sessionId);
-    await runtime.client.launch();
-    const loginUrl = await runtime.client.openLoginPage();
-    const isInstagramAuthenticated = !loginUrl.includes("/accounts/login");
-    const runtimeStatusMessage = isInstagramAuthenticated
-      ? "Instância ligada e sessão autenticada no Instagram."
-      : "Instância ligada, mas esta sessão não está logada no Instagram.";
-    if (!isInstagramAuthenticated) {
-      await markSessionRequiresRelogin(userId, sessionId, "runtime_started_but_not_authenticated");
-    }
-
-    let webhookListenerStarted = false;
-    let webhookListenerError: string | null = null;
-    if (isInstagramAuthenticated) {
-      const webhookEnabled = await isIncomingWebhookEnabledForSession(sessionId);
-      if (webhookEnabled) {
-        try {
-          await ensureDmTapForSse(runtime);
-          webhookListenerStarted = true;
-        } catch (e) {
-          webhookListenerError = e instanceof Error ? e.message : String(e);
-          logInstaAuth("incoming-webhook:listener-start-failed", {
-            userId,
-            sessionId,
-            error: webhookListenerError,
-          });
-        }
-      }
-    }
-
-    const runtimeStatusParts = [runtimeStatusMessage];
-    if (webhookListenerStarted) {
-      runtimeStatusParts.push("Escuta de mensagens para webhook iniciada.");
-    } else if (webhookListenerError) {
-      runtimeStatusParts.push(`Falha ao iniciar escuta de webhook: ${webhookListenerError}`);
-    }
+    const { loginUrl, isInstagramAuthenticated, runtimeStatusMessage } = await startInstaRuntimeForUser(
+      userId,
+      sessionId,
+    );
+    await markInstaRuntimeRestoreDesired(userId, sessionId);
 
     res.json({
       ...(await buildSessionsResponse(userId, state)),
       isInstagramAuthenticated,
-      runtimeStatusMessage: runtimeStatusParts.join(" "),
+      runtimeStatusMessage,
       loginUrl,
     });
   } catch (e) {
@@ -830,6 +920,8 @@ app.post("/insta/sessions/:sessionId/runtime/stop", async (req, res) => {
       await runtime.client.close().catch(() => null);
       instaRuntimes.delete(sessionId);
     }
+
+    await clearInstaRuntimeRestoreDesired(userId, sessionId);
 
     res.json({
       ...(await buildSessionsResponse(userId, state)),
@@ -1304,7 +1396,7 @@ app.get("/test/insta-connect", (_req, res) => {
  */
 app.post("/test/insta-connect/launch", async (_req, res) => {
   const client = createInstaConnect(
-    { basePath: process.cwd(), headless: true },
+    { basePath: BACKEND_ROOT, headless: true },
     (launch) => withInstaLaunchOptions(launch),
   );
   try {
@@ -2104,7 +2196,29 @@ async function processDueFollowSchedulesTick(): Promise<void> {
       .limit(10)
       .lean();
 
-    logFollowSchedule("tick", { dueCount: due.length, at: now.toISOString() });
+    const upcomingFilter = { status: "active" as const, nextRunAt: { $gt: now } };
+    const upcomingTotal = await FollowScheduleModel.countDocuments(upcomingFilter);
+    const upcomingMaxPreview = 25;
+    const upcomingRows = await FollowScheduleModel.find(upcomingFilter)
+      .sort({ nextRunAt: 1 })
+      .limit(upcomingMaxPreview)
+      .select({ _id: 1, nextRunAt: 1, flowType: 1, targetUsername: 1, sessionId: 1, keepActive: 1 })
+      .lean();
+
+    logFollowSchedule("tick", {
+      dueCount: due.length,
+      at: now.toISOString(),
+      upcomingTotal,
+      upcomingPreviewTruncated: upcomingTotal > upcomingRows.length,
+      upcomingPreview: upcomingRows.map((s) => ({
+        scheduleId: String(s._id),
+        nextRunAt: s.nextRunAt ? new Date(s.nextRunAt).toISOString() : null,
+        flowType: s.flowType,
+        targetUsername: s.targetUsername ?? null,
+        sessionId: s.sessionId,
+        keepActive: s.keepActive,
+      })),
+    });
 
     for (const candidate of due) {
       const locked = await FollowScheduleModel.findOneAndUpdate(
@@ -2438,6 +2552,10 @@ async function bootstrap() {
     void processDueFollowSchedulesTick();
     app.listen(port, () => {
       console.log(`Server listening on http://127.0.0.1:${port}`);
+      void restorePersistedInstaRuntimes().catch((e) => {
+        const message = e instanceof Error ? e.message : String(e);
+        console.error(`[insta-auth] runtime:boot-restore:unhandled ${message}`);
+      });
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

@@ -18,6 +18,16 @@ const userSchema = new Schema(
       required: false,
       default: [],
     },
+    /** Legado (sessão única); migrado para instaSessionIds ao ler o usuário. */
+    instaSessionId: { type: String, required: false },
+    /** Legado; migrado para ordem em instaSessionIds. */
+    activeInstaSessionId: { type: String, required: false },
+    /** Sessões cujo Chromium estava ligado na última vez; reabertas automaticamente após restart do servidor. */
+    instaRestoreRuntimeSessionIds: {
+      type: [String],
+      required: false,
+      default: [],
+    },
   },
   {
     timestamps: true,

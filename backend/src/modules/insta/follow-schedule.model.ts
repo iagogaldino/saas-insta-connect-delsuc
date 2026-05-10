@@ -31,6 +31,8 @@ const followScheduleSchema = new Schema(
     weeklyDays: [{ type: Number, min: 0, max: 6 }],
     runAtHour: { type: Number, required: true, min: 0, max: 23, default: 10 },
     runAtMinute: { type: Number, required: true, min: 0, max: 59, default: 0 },
+    /** IANA: horário e dias da semana interpretados neste fuso (alinhado ao navegador quando enviado). */
+    scheduleTimeZone: { type: String, required: false, default: null },
     entries: { type: [followScheduleEntrySchema], default: [] },
     oneOffRemainingDates: { type: [String], default: [] },
     nextRunAt: { type: Date, required: false, default: null, index: true },

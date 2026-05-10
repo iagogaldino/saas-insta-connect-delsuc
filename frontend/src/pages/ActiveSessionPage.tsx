@@ -400,6 +400,7 @@ export function ActiveSessionPage() {
         keepActive: draft.keepActive,
         weeklyDays: draft.keepActive ? draft.weeklyDays : [],
         runTime: draft.runTime,
+        timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
       })
       setDraft({
         entries: [],
@@ -836,6 +837,12 @@ export function ActiveSessionPage() {
                   Status: <strong>{item.status}</strong> · Próximo:{" "}
                   {item.nextRunAt ? formatDateTimeBr(item.nextRunAt) : "não definido"} · Horário padrão:{" "}
                   <code>{item.runTime}</code>
+                  {item.timeZone ? (
+                    <>
+                      {" "}
+                      · Fuso: <code>{item.timeZone}</code>
+                    </>
+                  ) : null}
                 </p>
                 <ul className="list-inside list-disc text-slate-600">
                   {item.entries.map((entry) => (

@@ -10,6 +10,8 @@ const envSchema = z.object({
   JWT_ACCESS_EXPIRES_IN: z.string().default("15m"),
   JWT_INTEGRATION_EXPIRES_IN: z.string().default("365d"),
   BCRYPT_SALT_ROUNDS: z.coerce.number().int().min(8).max(15).default(10),
+  /** IANA (ex.: America/Sao_Paulo). Agendamentos antigos sem fuso gravado usam este valor. */
+  FOLLOW_SCHEDULE_DEFAULT_TIMEZONE: z.string().min(2).default("America/Sao_Paulo"),
 });
 
 export const env = envSchema.parse(process.env);

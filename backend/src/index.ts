@@ -11,6 +11,13 @@ import { UserModel } from "./modules/auth/user.model";
 import { FollowHistoryModel } from "./modules/insta/follow-history.model";
 import { FollowScheduleModel } from "./modules/insta/follow-schedule.model";
 import { InstaSessionProfileModel } from "./modules/insta/session-profile.model";
+import {
+  computeNextRunAtZoned,
+  dateKeyInTimeZone,
+  normalizeScheduleTimeZoneInput,
+  resolveOneOffRunDateToExecuteZoned,
+  resolveScheduleTimeZone,
+} from "./modules/insta/follow-schedule-time";
 import { authRoutes } from "./modules/auth/auth.routes";
 import { requireAuth } from "./modules/auth/auth.middleware";
 
@@ -1666,33 +1673,8 @@ type FollowScheduleDocLike = {
   status: FollowScheduleStatus;
   nextRunAt?: Date | null;
   recurrenceLastRunAt?: Date | null;
+  scheduleTimeZone?: string | null;
 };
-
-function getSlotInstantUtc(dateKey: string, runAtHour: number, runAtMinute: number): Date | null {
-  const parsed = parseEntryDate(dateKey);
-  if (!parsed) return null;
-  parsed.setUTCHours(runAtHour, runAtMinute, 0, 0);
-  return parsed;
-}
-
-/** Primeiro dia em one-off ainda não disparado, cujo horário do slot já passou. */
-function resolveOneOffRunDateToExecute(schedule: FollowScheduleDocLike, now: Date): string | null {
-  if (schedule.keepActive) return null;
-  const sorted = [...schedule.oneOffRemainingDates].sort((a, b) => a.localeCompare(b));
-  for (const d of sorted) {
-    const slot = getSlotInstantUtc(d, schedule.runAtHour, schedule.runAtMinute);
-    if (!slot || slot.getTime() > now.getTime()) continue;
-    const entry = schedule.entries.find((e) => e.date === d);
-    if (entry?.dispatchedAt) continue;
-    if (!entry || entry.quantity < 1 || entry.quantity > 100) continue;
-    return d;
-  }
-  return null;
-}
-
-function normalizeDateKey(date: Date): string {
-  return date.toISOString().slice(0, 10);
-}
 
 function parseEntryDate(value: string): Date | null {
   const trimmed = value.trim();
@@ -1714,7 +1696,7 @@ function normalizeScheduleEntries(input: unknown): FollowScheduleEntryInput[] | 
     if (!parsedDate || !Number.isFinite(quantity) || quantity < 1 || quantity > 100) {
       return null;
     }
-    dedupe.set(normalizeDateKey(parsedDate), Math.floor(quantity));
+    dedupe.set(dateRaw.trim(), Math.floor(quantity));
   }
   return [...dedupe.entries()]
     .map(([date, quantity]) => ({ date, quantity }))
@@ -1742,37 +1724,18 @@ function normalizeRunTime(value: unknown): { hour: number; minute: number } {
 }
 
 function computeNextRunAt(schedule: FollowScheduleDocLike, from: Date): Date | null {
-  const base = new Date(from);
-  base.setSeconds(0, 0);
-
-  if (schedule.keepActive) {
-    if (schedule.weeklyDays.length === 0) return null;
-    for (let delta = 0; delta <= 14; delta += 1) {
-      const cand = new Date(base);
-      cand.setUTCDate(base.getUTCDate() + delta);
-      cand.setUTCHours(schedule.runAtHour, schedule.runAtMinute, 0, 0);
-      if (!schedule.weeklyDays.includes(cand.getUTCDay())) continue;
-      if (cand.getTime() <= from.getTime()) continue;
-      return cand;
-    }
-    return null;
-  }
-
-  const sorted = [...schedule.oneOffRemainingDates].sort((a, b) => a.localeCompare(b));
-  for (const d of sorted) {
-    const slot = getSlotInstantUtc(d, schedule.runAtHour, schedule.runAtMinute);
-    if (!slot) continue;
-    const entry = schedule.entries.find((e) => e.date === d);
-    if (entry?.dispatchedAt) continue;
-    if (slot.getTime() > from.getTime()) return slot;
-  }
-  for (const d of sorted) {
-    const entry = schedule.entries.find((e) => e.date === d);
-    if (entry?.dispatchedAt) continue;
-    if (!getSlotInstantUtc(d, schedule.runAtHour, schedule.runAtMinute)) continue;
-    return from;
-  }
-  return null;
+  return computeNextRunAtZoned(
+    {
+      keepActive: schedule.keepActive,
+      weeklyDays: schedule.weeklyDays,
+      runAtHour: schedule.runAtHour,
+      runAtMinute: schedule.runAtMinute,
+      oneOffRemainingDates: schedule.oneOffRemainingDates,
+      entries: schedule.entries,
+    },
+    from,
+    schedule.scheduleTimeZone,
+  );
 }
 
 async function persistFollowHistory(userId: string, sessionId: string, items: Array<{
@@ -1991,6 +1954,7 @@ function serializeFollowSchedule(item: {
   weeklyDays: number[];
   runAtHour: number;
   runAtMinute: number;
+  scheduleTimeZone?: string | null;
   entries: FollowScheduleEntryWithDispatch[];
   oneOffRemainingDates: string[];
   nextRunAt?: Date | null;
@@ -2010,6 +1974,7 @@ function serializeFollowSchedule(item: {
     keepActive: item.keepActive,
     weeklyDays: item.weeklyDays,
     runTime: `${String(item.runAtHour).padStart(2, "0")}:${String(item.runAtMinute).padStart(2, "0")}`,
+    timeZone: resolveScheduleTimeZone(item.scheduleTimeZone),
     entries: item.entries.map((e) => {
       const at = e.dispatchedAt;
       return {
@@ -2039,7 +2004,7 @@ async function executeSingleFollowSchedule(schedule: FollowScheduleDocLike): Pro
   let quantity: number;
 
   if (schedule.keepActive) {
-    runDate = normalizeDateKey(now);
+    runDate = dateKeyInTimeZone(now, schedule.scheduleTimeZone);
     const todayEntry = schedule.entries.find((e) => e.date === runDate);
     const fromEntry = todayEntry ?? schedule.entries[0];
     if (!fromEntry || fromEntry.quantity < 1 || fromEntry.quantity > 100) {
@@ -2048,7 +2013,7 @@ async function executeSingleFollowSchedule(schedule: FollowScheduleDocLike): Pro
     }
     quantity = fromEntry.quantity;
   } else {
-    const resolved = resolveOneOffRunDateToExecute(schedule, now);
+    const resolved = resolveOneOffRunDateToExecuteZoned(schedule, now, schedule.scheduleTimeZone);
     if (!resolved) {
       logFollowSchedule("execute:skip-nothing-due", { scheduleId, sessionId: schedule.sessionId });
       throw new Error("Nenhum slot one-off pendente (sem atraso ou já disparado).");
@@ -2177,6 +2142,32 @@ async function executeSingleFollowSchedule(schedule: FollowScheduleDocLike): Pro
 
 const schedulerWorkerId = randomUUID();
 let schedulerTickInFlight = false;
+
+/** Recalcula `nextRunAt` com a lógica de fuso atual (útil após upgrade ou mudança de env). */
+async function realignAllFollowScheduleNextRunAt(): Promise<void> {
+  const rows = await FollowScheduleModel.find({}).lean();
+  for (const row of rows) {
+    const doc = row as FollowScheduleDocLike;
+    const next = computeNextRunAt(doc, new Date());
+    let nextStatus: FollowScheduleStatus = doc.status;
+    if (doc.status === "active" && !next) {
+      nextStatus = "paused";
+    }
+    const statusChanged = nextStatus !== doc.status;
+    await FollowScheduleModel.updateOne(
+      { _id: row._id },
+      {
+        $set: {
+          nextRunAt: next,
+          ...(statusChanged ? { status: nextStatus } : {}),
+        },
+      },
+    );
+  }
+  if (rows.length > 0) {
+    logFollowSchedule("boot:nextRunAt-realigned", { count: rows.length });
+  }
+}
 
 async function processDueFollowSchedulesTick(): Promise<void> {
   if (schedulerTickInFlight) {
@@ -2310,6 +2301,10 @@ app.post("/insta/follow-schedules", async (req, res) => {
       return;
     }
 
+    const scheduleTimeZone = normalizeScheduleTimeZoneInput(
+      req.body?.timeZone ?? req.body?.scheduleTimeZone,
+    );
+
     const schedule = await FollowScheduleModel.create({
       userId,
       sessionId: runtime.sessionId,
@@ -2322,6 +2317,7 @@ app.post("/insta/follow-schedules", async (req, res) => {
       weeklyDays,
       runAtHour: runAt.hour,
       runAtMinute: runAt.minute,
+      scheduleTimeZone,
       status: "active",
       nextRunAt: null,
       lastRunAt: null,
@@ -2409,6 +2405,11 @@ app.patch("/insta/follow-schedules/:scheduleId", async (req, res) => {
       const runAt = normalizeRunTime(req.body.runTime);
       current.runAtHour = runAt.hour;
       current.runAtMinute = runAt.minute;
+    }
+    if (typeof req.body?.timeZone === "string" || typeof req.body?.scheduleTimeZone === "string") {
+      (current as unknown as { scheduleTimeZone: string }).scheduleTimeZone = normalizeScheduleTimeZoneInput(
+        req.body?.timeZone ?? req.body?.scheduleTimeZone,
+      );
     }
     if (Array.isArray(req.body?.entries)) {
       const entries = normalizeScheduleEntries(req.body.entries);
@@ -2545,6 +2546,7 @@ app.post("/insta/realtime/dm-tap/stop", async (req, res) => {
 async function bootstrap() {
   try {
     await connectDatabase();
+    await realignAllFollowScheduleNextRunAt();
     logFollowSchedule("scheduler:started", { intervalMs: 30_000, workerId: schedulerWorkerId });
     setInterval(() => {
       void processDueFollowSchedulesTick();

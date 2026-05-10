@@ -201,6 +201,8 @@ export type FollowScheduleItem = {
   keepActive: boolean
   weeklyDays: number[]
   runTime: string
+  /** IANA: horário é interpretado neste fuso (enviado pelo navegador ao criar). */
+  timeZone?: string
   entries: FollowScheduleEntry[]
   oneOffRemainingDates: string[]
   nextRunAt: string | null
@@ -223,6 +225,8 @@ export type CreateFollowSchedulePayload = {
   keepActive: boolean
   weeklyDays: number[]
   runTime: string
+  /** Ex.: America/Sao_Paulo — alinha disparo ao horário local do usuário. */
+  timeZone?: string
 }
 
 export type UpdateFollowSchedulePayload = Partial<{
@@ -232,6 +236,7 @@ export type UpdateFollowSchedulePayload = Partial<{
   keepActive: boolean
   weeklyDays: number[]
   runTime: string
+  timeZone: string
   status: FollowScheduleStatus
 }>
 

@@ -2,6 +2,15 @@ const raw = import.meta.env.VITE_API_BASE_URL
 /** Base URL do backend (Express), ex.: `http://127.0.0.1:3000` */
 export const apiBaseUrl: string = typeof raw === "string" && raw.length > 0 ? raw : "http://127.0.0.1:3000"
 
+/** Origem do Socket.IO (mesmo host/porta que o REST). */
+export function getInstaRealtimeSocketUrl(): string {
+  try {
+    return new URL(apiBaseUrl).origin
+  } catch {
+    return apiBaseUrl.replace(/\/$/, "")
+  }
+}
+
 const rawAppBasePath = import.meta.env.VITE_APP_BASE_PATH
 
 function normalizeBasePath(value: string | undefined): string {

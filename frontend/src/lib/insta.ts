@@ -177,6 +177,14 @@ export type AutoFollowJobStatusResponse = {
   }
 }
 
+/** Payload de `autofollow:job` no Socket.IO (mesmo formato do `job` em GET). */
+export type AutofollowJobSocketPayload = AutoFollowJobStatusResponse
+
+export type FollowScheduleTouchPayload = {
+  sessionId: string
+  reason: "executed" | "mutated"
+}
+
 export async function getAutoFollowJobStatus(jobId: string) {
   return api.get<AutoFollowJobStatusResponse>(`/insta/auto-follow-jobs/${encodeURIComponent(jobId)}`)
 }
@@ -261,9 +269,12 @@ export async function postFollowSchedule(payload: CreateFollowSchedulePayload) {
   return api.post<{ ok: true; schedule: FollowScheduleItem }>("/insta/follow-schedules", payload)
 }
 
-export async function getFollowSchedules(flowType?: FollowScheduleFlowType) {
+export async function getFollowSchedules(flowType?: FollowScheduleFlowType, sessionId?: string | null) {
   return api.get<{ ok: true; schedules: FollowScheduleItem[] }>("/insta/follow-schedules", {
-    params: flowType ? { flowType } : undefined,
+    params: {
+      ...(flowType ? { flowType } : {}),
+      ...(sessionId ? { sessionId } : {}),
+    },
   })
 }
 

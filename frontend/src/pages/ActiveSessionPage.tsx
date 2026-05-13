@@ -1,8 +1,9 @@
 import axios from "axios"
-import { Loader2, Play, Users } from "lucide-react"
-import { useEffect, useState, type FormEvent, type ReactNode } from "react"
+import { CalendarClock, Loader2, Play, Users } from "lucide-react"
+import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from "react"
 import { useNavigate } from "react-router-dom"
 import { useInstaConnect } from "../features/insta/use-insta-connect"
+import { readAuthToken } from "../lib/auth-session-storage"
 import { formatDateTimeBr, formatIsoDateBr } from "../lib/format-br"
 import {
   deleteFollowSchedule,
@@ -22,6 +23,13 @@ import {
   type FollowScheduleItem,
   type InstaPreviewProfileResponse,
 } from "../lib/insta"
+import {
+  AUTOFOLLOW_SOCKET_FALLBACK_POLL,
+  AUTOFOLLOW_SOCKET_WAIT_TIMEOUT,
+  createInstaRealtimeSocket,
+  waitForAutofollowJobOnSocket,
+  waitForSocketConnected,
+} from "../lib/insta-realtime-socket"
 
 type ResultPanelData = {
   requested: number
@@ -102,6 +110,32 @@ const weekDays: Array<{ value: number; label: string }> = [
   { value: 4, label: "Qui" },
   { value: 5, label: "Sex" },
   { value: 6, label: "Sab" },
+]
+
+type SessionFeatureTab = "autofollow" | "webhook" | "conversas"
+
+/** Ordem do menu: funcionalidades novas primeiro. */
+const SESSION_FEATURE_TABS: ReadonlyArray<{
+  id: SessionFeatureTab
+  label: string
+  isNew: boolean
+}> = [
+  { id: "autofollow", label: "AutoFollow", isNew: true },
+  { id: "webhook", label: "Webhook", isNew: true },
+  { id: "conversas", label: "Conversas", isNew: false },
+]
+
+/** Sub-abas dentro de AutoFollow (execução manual e agendas). */
+type AutofollowFlowSubTab = "suggested" | "followers"
+
+const AUTOFOLLOW_MANUAL_SUB_TABS: ReadonlyArray<{ id: AutofollowFlowSubTab; label: string }> = [
+  { id: "suggested", label: "Sugeridos (Explore)" },
+  { id: "followers", label: "Seguidores de perfil" },
+]
+
+const AUTOFOLLOW_SCHEDULE_SUB_TABS: ReadonlyArray<{ id: AutofollowFlowSubTab; label: string }> = [
+  { id: "suggested", label: "Seguir sugeridos" },
+  { id: "followers", label: "Seguir seguidores de @" },
 ]
 
 /** YYYY-MM-DD (fuso local) — alinha com <input type="date" />. */
@@ -262,6 +296,7 @@ function AutoFollowResultsPanel({
 export function ActiveSessionPage() {
   const navigate = useNavigate()
   const { activeSessionId, sessions, refreshSessions } = useInstaConnect()
+  const instaSocketRef = useRef<ReturnType<typeof createInstaRealtimeSocket> | null>(null)
   const [quantity, setQuantity] = useState(3)
   const [privacyFilter, setPrivacyFilter] = useState<AutoFollowPrivacyFilter>("any")
   const [isSubmitting, setIsSubmitting] = useState(false)
@@ -319,6 +354,9 @@ export function ActiveSessionPage() {
     weeklyDays: [],
     stopAfterFollowedInput: "",
   })
+  const [activeFeatureTab, setActiveFeatureTab] = useState<SessionFeatureTab>(SESSION_FEATURE_TABS[0]!.id)
+  const [manualSubTab, setManualSubTab] = useState<AutofollowFlowSubTab>("suggested")
+  const [scheduleSubTab, setScheduleSubTab] = useState<AutofollowFlowSubTab>("suggested")
 
   const formBusy =
     isSubmitting || ffSubmitting || ffPreviewLoading || incomingWebhookSaving || incomingWebhookTesting || scheduleLoading
@@ -347,28 +385,27 @@ export function ActiveSessionPage() {
   )
 
   useEffect(() => {
-    setIncomingWebhookUrlInput(activeSession?.incomingWebhookUrl ?? "")
-    setIncomingWebhookEnabledInput(Boolean(activeSession?.incomingWebhookEnabled))
-    setIncomingWebhookMessage(null)
-    setIncomingWebhookError(null)
+    queueMicrotask(() => {
+      setIncomingWebhookUrlInput(activeSession?.incomingWebhookUrl ?? "")
+      setIncomingWebhookEnabledInput(Boolean(activeSession?.incomingWebhookEnabled))
+      setIncomingWebhookMessage(null)
+      setIncomingWebhookError(null)
+    })
   }, [activeSessionId, activeSession?.incomingWebhookUrl, activeSession?.incomingWebhookEnabled])
 
-  useEffect(() => {
-    void refreshSchedules()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeSessionId])
-
-  async function refreshSchedules() {
+  const refreshSchedules = useCallback(async (options?: { quiet?: boolean }) => {
     if (!activeSessionId) {
       setSuggestedSchedules([])
       setFollowersSchedules([])
       return
     }
-    setScheduleLoading(true)
+    if (!options?.quiet) {
+      setScheduleLoading(true)
+    }
     try {
       const [suggestedRes, followersRes] = await Promise.all([
-        getFollowSchedules("suggested"),
-        getFollowSchedules("followers"),
+        getFollowSchedules("suggested", activeSessionId),
+        getFollowSchedules("followers", activeSessionId),
       ])
       setSuggestedSchedules(suggestedRes.data.schedules)
       setFollowersSchedules(followersRes.data.schedules)
@@ -380,9 +417,44 @@ export function ActiveSessionPage() {
         setScheduleError(e instanceof Error ? e.message : "Falha ao carregar agendamentos.")
       }
     } finally {
-      setScheduleLoading(false)
+      if (!options?.quiet) {
+        setScheduleLoading(false)
+      }
     }
-  }
+  }, [activeSessionId])
+
+  useEffect(() => {
+    if (!activeSessionId) {
+      instaSocketRef.current?.disconnect()
+      instaSocketRef.current = null
+      return
+    }
+    const token = readAuthToken()
+    if (!token) {
+      instaSocketRef.current?.disconnect()
+      instaSocketRef.current = null
+      return
+    }
+    const socket = createInstaRealtimeSocket(token, {
+      onFollowScheduleTouch(data) {
+        if (data.sessionId !== activeSessionId) return
+        void refreshSchedules({ quiet: true })
+      },
+    })
+    instaSocketRef.current = socket
+    return () => {
+      socket.disconnect()
+      if (instaSocketRef.current === socket) {
+        instaSocketRef.current = null
+      }
+    }
+  }, [activeSessionId, refreshSchedules])
+
+  useEffect(() => {
+    queueMicrotask(() => {
+      void refreshSchedules()
+    })
+  }, [activeSessionId, refreshSchedules])
 
   function addDateEntry(draft: ScheduleDraft, setDraft: (next: ScheduleDraft) => void) {
     setScheduleError(null)
@@ -605,7 +677,26 @@ export function ActiveSessionPage() {
   }
 
   async function waitForAutoFollowJobResult<T>(jobId: string): Promise<T> {
-    const started = Date.now()
+    const deadline = Date.now() + 30 * 60 * 1000
+    const socket = instaSocketRef.current
+    if (socket) {
+      const ready = await waitForSocketConnected(socket, 5_000)
+      if (ready) {
+        try {
+          return await waitForAutofollowJobOnSocket<T>(socket, jobId, Math.max(10_000, deadline - Date.now()))
+        } catch (e) {
+          if (
+            e instanceof Error &&
+            (e.message === AUTOFOLLOW_SOCKET_FALLBACK_POLL || e.message === AUTOFOLLOW_SOCKET_WAIT_TIMEOUT)
+          ) {
+            // fallback HTTP abaixo
+          } else {
+            throw e
+          }
+        }
+      }
+    }
+
     while (true) {
       const { data } = await getAutoFollowJobStatus(jobId)
       if (data.job.status === "completed") {
@@ -614,7 +705,7 @@ export function ActiveSessionPage() {
       if (data.job.status === "failed") {
         throw new Error(data.job.error ?? "A automação falhou no processamento em background.")
       }
-      if (Date.now() - started > 30 * 60 * 1000) {
+      if (Date.now() > deadline) {
         throw new Error("A automação excedeu o tempo máximo de espera (30 min).")
       }
       await new Promise((resolve) => setTimeout(resolve, 2000))
@@ -1183,6 +1274,47 @@ export function ActiveSessionPage() {
         ) : null}
       </div>
 
+      <div
+        role="tablist"
+        aria-label="Funcionalidades desta sessão"
+        className="flex w-full max-w-full flex-wrap gap-1 rounded-lg border border-slate-200 bg-slate-50 p-0.5"
+      >
+        {SESSION_FEATURE_TABS.map((tab) => {
+          const selected = activeFeatureTab === tab.id
+          return (
+            <button
+              key={tab.id}
+              type="button"
+              role="tab"
+              id={`session-feature-tab-${tab.id}`}
+              aria-selected={selected}
+              aria-controls="session-feature-panel"
+              tabIndex={selected ? 0 : -1}
+              onClick={() => setActiveFeatureTab(tab.id)}
+              className={
+                selected
+                  ? "inline-flex items-center gap-1.5 rounded-md bg-white px-3 py-1.5 text-sm font-medium text-slate-900 shadow-sm"
+                  : "inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium text-slate-600 transition hover:bg-slate-100"
+              }
+            >
+              {tab.label}
+              {tab.isNew ? (
+                <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-emerald-800">
+                  Novo
+                </span>
+              ) : null}
+            </button>
+          )
+        })}
+      </div>
+
+      <div
+        role="tabpanel"
+        id="session-feature-panel"
+        aria-labelledby={`session-feature-tab-${activeFeatureTab}`}
+        className="space-y-6"
+      >
+        {activeFeatureTab === "conversas" ? (
       <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
         <div className="mb-4 flex items-center gap-2 text-slate-800">
           <Users className="h-5 w-5" aria-hidden />
@@ -1200,7 +1332,8 @@ export function ActiveSessionPage() {
           Abrir conversas da sessão
         </button>
       </div>
-
+        ) : null}
+        {activeFeatureTab === "webhook" ? (
       <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
         <div className="mb-4 flex items-center gap-2 text-slate-800">
           <Users className="h-5 w-5" aria-hidden />
@@ -1279,296 +1412,390 @@ export function ActiveSessionPage() {
           ) : null}
         </div>
       </div>
-
+        ) : null}
+        {activeFeatureTab === "autofollow" ? (
       <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
-        <div className="mb-4 flex items-center gap-2 text-slate-800">
-          <Users className="h-5 w-5" aria-hidden />
-          <h3 className="text-base font-semibold">AutoFollow</h3>
-        </div>
-        <div className="mb-5 space-y-3 rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
-          <p className="font-medium">
-            Recomendações de segurança (estimativas de mercado para 2026, sem números oficiais do Instagram):
-          </p>
-          <div className="grid gap-2 md:grid-cols-2">
-            <div className="rounded border border-amber-200 bg-white/70 p-2">
-              <p className="font-semibold">Conta nova (&lt; 3 meses)</p>
-              <p>50 a 100 follows/dia</p>
-              <p className="text-xs opacity-80">Ritmo sugerido: 5 a 10 por hora</p>
-            </div>
-            <div className="rounded border border-amber-200 bg-white/70 p-2">
-              <p className="font-semibold">Conta antiga/ativa</p>
-              <p>150 a 200 follows/dia</p>
-              <p className="text-xs opacity-80">Ritmo sugerido: 15 a 20 por hora</p>
-            </div>
+        <header className="border-b border-slate-100 pb-5">
+          <div className="flex items-center gap-2 text-slate-800">
+            <Users className="h-5 w-5 shrink-0" aria-hidden />
+            <h3 className="text-base font-semibold">AutoFollow</h3>
           </div>
-          <div className="space-y-1 text-xs leading-relaxed">
-            <p>• Limite total da conta: ~7.500 pessoas seguidas.</p>
-            <p>• Simule comportamento humano: intervalos de 30 a 60 segundos entre ações.</p>
-            <p>• Evite combinar muitos follows + curtidas + DMs no mesmo dia.</p>
-            <p>• Aquecimento recomendado para conta nova: começar com ~20/dia e subir gradualmente.</p>
-            <p>
-              • Se ocorrer bloqueio de ação (Action Block), pause a automação por 24 a 48 horas.
+          <p className="mt-2 max-w-2xl text-sm leading-relaxed text-slate-600">
+            Rode uma vez agora (execução manual) ou configure agendas: o backend dispara os jobs nos horários definidos,
+            usando sempre esta sessão ativa.
+          </p>
+        </header>
+
+        <section className="mt-6 space-y-4" aria-labelledby="autofollow-manual-heading">
+          <div>
+            <h4 id="autofollow-manual-heading" className="text-sm font-semibold text-slate-900">
+              Execução manual
+            </h4>
+            <p className="mt-1 text-xs text-slate-500">
+              Uma rodada imediata. Em &quot;Seguidores de um perfil&quot;, confirme o @ depois da prévia quando o Instagram
+              validar o alvo.
             </p>
           </div>
-        </div>
 
-        <div className="mb-6 space-y-3 rounded-lg border border-slate-200 bg-slate-50 p-4">
-          <h4 className="text-sm font-semibold text-slate-800">Agendamento de AutoFollow</h4>
-          <p className="text-xs text-slate-600">
-            Selecione datas e quantidade por dia. O motor interno do backend executa automaticamente nos horários configurados.
-          </p>
-          {scheduleMessage ? <p className="text-sm text-emerald-700">{scheduleMessage}</p> : null}
-          {scheduleError ? <p className="text-sm text-rose-600">{scheduleError}</p> : null}
-          {renderSchedulePanel(
-            "Agenda: seguir sugeridos",
-            "suggested",
-            suggestedDraft,
-            setSuggestedDraft,
-            suggestedSchedules,
-          )}
-          {renderSchedulePanel(
-            "Agenda: seguir seguidores de perfil",
-            "followers",
-            followersDraft,
-            setFollowersDraft,
-            followersSchedules,
-          )}
-        </div>
-
-        <h4 className="mb-3 text-sm font-semibold text-slate-800">A partir de sugeridos (Explore)</h4>
-        <form onSubmit={handleSubmitSuggested} className="mb-8 space-y-4">
-          <div>
-            <label htmlFor="af-quantity" className="mb-1 block text-sm font-medium text-slate-700">
-              Quantidade (1 a 100)
-            </label>
-            <input
-              id="af-quantity"
-              type="number"
-              min={1}
-              max={100}
-              value={quantity}
-              onChange={(e) => setQuantity(Number(e.target.value))}
-              disabled={formBusy || !isSessionConnected}
-              className="w-full rounded-lg border border-slate-200 px-3 py-2 text-slate-900 shadow-sm focus:border-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-300 sm:w-56"
-            />
+          <div
+            role="tablist"
+            aria-label="Modo de execução manual"
+            className="flex w-full max-w-full flex-wrap gap-1 rounded-lg border border-slate-200 bg-slate-100/80 p-0.5"
+          >
+            {AUTOFOLLOW_MANUAL_SUB_TABS.map((st) => {
+              const sel = manualSubTab === st.id
+              return (
+                <button
+                  key={st.id}
+                  type="button"
+                  role="tab"
+                  id={`autofollow-manual-tab-${st.id}`}
+                  aria-selected={sel}
+                  aria-controls="autofollow-manual-panel"
+                  tabIndex={sel ? 0 : -1}
+                  onClick={() => setManualSubTab(st.id)}
+                  className={
+                    sel
+                      ? "rounded-md bg-white px-3 py-1.5 text-xs font-medium text-slate-900 shadow-sm"
+                      : "rounded-md px-3 py-1.5 text-xs font-medium text-slate-600 transition hover:bg-slate-200/70"
+                  }
+                >
+                  {st.label}
+                </button>
+              )
+            })}
           </div>
 
-          <div>
-            <label htmlFor="af-filter" className="mb-1 block text-sm font-medium text-slate-700">
-              Filtro de privacidade
-            </label>
-            <select
-              id="af-filter"
-              value={privacyFilter}
-              onChange={(e) => setPrivacyFilter(e.target.value as AutoFollowPrivacyFilter)}
-              disabled={formBusy || !isSessionConnected}
-              className="w-full rounded-lg border border-slate-200 px-3 py-2 text-slate-900 shadow-sm focus:border-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-300 sm:w-56"
-            >
-              <option value="any">Qualquer perfil</option>
-              <option value="public">Somente públicos</option>
-              <option value="private">Somente privados</option>
-            </select>
-          </div>
-
-          {error ? <p className="text-sm text-red-600">{error}</p> : null}
-
-          <div className="flex items-center gap-2">
-            <button
-              type="submit"
-              disabled={formBusy || !isSessionConnected}
-              className="inline-flex items-center gap-2 rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-70"
-            >
-              {isSubmitting ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : <Play className="h-4 w-4" aria-hidden />}
-              {isSubmitting ? "Executando..." : "Iniciar (sugeridos)"}
-            </button>
-          </div>
-
-          {result ? (
-            <AutoFollowResultsPanel
-              result={result}
-              resultTab={resultTab}
-              setResultTab={setResultTab}
-            />
-          ) : null}
-        </form>
-
-        <h4 className="mb-3 text-sm font-semibold text-slate-800">Seguidores de um perfil</h4>
-        <p className="mb-3 text-sm text-slate-500">
-          Informe o <strong>@</strong> do perfil cujos <em>seguidores</em> você quer seguir. Ao clicar em{" "}
-          <em>Iniciar</em>, o app verifica se o perfil existe; se achar, mostra foto e nome e libera
-          o botão para confirmar. A automação lê a lista de seguidores e aplica o filtro de privacidade
-          abaixo.
-        </p>
-        <form onSubmit={handleSubmitFollowers} className="space-y-4">
-          <div>
-            <label htmlFor="ff-target" className="mb-1 block text-sm font-medium text-slate-700">
-              Perfil alvo
-            </label>
-            <input
-              id="ff-target"
-              type="text"
-              autoComplete="off"
-              placeholder="ex: nomedaconta"
-              value={ffTarget}
-              onChange={(e) => {
-                setFfTarget(e.target.value)
-                resetFollowersConfirmState()
-              }}
-              disabled={formBusy || !isSessionConnected}
-              className="w-full rounded-lg border border-slate-200 px-3 py-2 text-slate-900 shadow-sm focus:border-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-300 sm:max-w-md"
-            />
-            {ffPreviewError ? <p className="mt-2 text-sm text-rose-600">{ffPreviewError}</p> : null}
-            {ffPreview && ffPreview.found ? (
-              <div
-                className={`mt-3 flex max-w-md gap-3 rounded-lg border p-3 text-sm text-slate-800 ${
-                  ffAwaitingConfirm
-                    ? "border-slate-900/15 bg-slate-50/90 ring-1 ring-slate-900/10"
-                    : "border-emerald-200 bg-emerald-50/60"
-                }`}
-              >
-                {ffPreview.profilePicUrl ? (
-                  <img
-                    src={ffPreview.profilePicUrl}
-                    alt=""
-                    className="h-16 w-16 shrink-0 rounded-full object-cover ring-2 ring-white shadow-sm"
-                    referrerPolicy="no-referrer"
-                  />
-                ) : (
-                  <div
-                    className="flex h-16 w-16 shrink-0 items-center justify-center rounded-full bg-slate-200 text-lg font-semibold text-slate-600 ring-2 ring-white"
-                    aria-hidden
-                  >
-                    @{ffPreview.username.slice(0, 2).toUpperCase()}
-                  </div>
-                )}
-                <div className="min-w-0">
-                  <p className="font-semibold text-slate-900">
-                    <a
-                      href={ffPreview.profileUrl}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="hover:underline"
-                    >
-                      @{ffPreview.username}
-                    </a>
+          <div
+            role="tabpanel"
+            id="autofollow-manual-panel"
+            aria-labelledby={`autofollow-manual-tab-${manualSubTab}`}
+            className="rounded-lg border border-slate-200 bg-slate-50/50 p-4"
+          >
+            {manualSubTab === "suggested" ? (
+              <>
+                <div className="mb-4 border-b border-slate-200/80 pb-3">
+                  <p className="text-xs leading-relaxed text-slate-500">
+                    Segue contas a partir das sugestões do Instagram para esta sessão.
                   </p>
-                  {ffPreview.fullName ? (
-                    <p className="text-slate-600">{ffPreview.fullName}</p>
+                </div>
+                <form onSubmit={handleSubmitSuggested} className="flex flex-col space-y-4">
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    <div>
+                      <label htmlFor="af-quantity" className="mb-1 block text-sm font-medium text-slate-700">
+                        Quantidade (1 a 100)
+                      </label>
+                      <input
+                        id="af-quantity"
+                        type="number"
+                        min={1}
+                        max={100}
+                        value={quantity}
+                        onChange={(e) => setQuantity(Number(e.target.value))}
+                        disabled={formBusy || !isSessionConnected}
+                        className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-slate-900 shadow-sm focus:border-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-300"
+                      />
+                    </div>
+                    <div>
+                      <label htmlFor="af-filter" className="mb-1 block text-sm font-medium text-slate-700">
+                        Filtro de privacidade
+                      </label>
+                      <select
+                        id="af-filter"
+                        value={privacyFilter}
+                        onChange={(e) => setPrivacyFilter(e.target.value as AutoFollowPrivacyFilter)}
+                        disabled={formBusy || !isSessionConnected}
+                        className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-slate-900 shadow-sm focus:border-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-300"
+                      >
+                        <option value="any">Qualquer perfil</option>
+                        <option value="public">Somente públicos</option>
+                        <option value="private">Somente privados</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  {error ? <p className="text-sm text-red-600">{error}</p> : null}
+
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="submit"
+                      disabled={formBusy || !isSessionConnected}
+                      className="inline-flex items-center gap-2 rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-70"
+                    >
+                      {isSubmitting ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : <Play className="h-4 w-4" aria-hidden />}
+                      {isSubmitting ? "Executando..." : "Iniciar (sugeridos)"}
+                    </button>
+                  </div>
+
+                  {result ? (
+                    <div className="mt-auto border-t border-slate-200/80 pt-4">
+                      <AutoFollowResultsPanel
+                        result={result}
+                        resultTab={resultTab}
+                        setResultTab={setResultTab}
+                      />
+                    </div>
                   ) : null}
-                  {ffAwaitingConfirm ? (
-                    <p className="mt-1 text-xs text-slate-500">
-                      Se for a conta certa, clique em «Confirmar e seguir seguidores» abaixo.
+                </form>
+              </>
+            ) : (
+              <>
+                <div className="mb-4 border-b border-slate-200/80 pb-3">
+                  <p className="text-xs leading-relaxed text-slate-500">
+                    Informe o <strong>@</strong> alvo. <em>Iniciar</em> valida o perfil; use{" "}
+                    <em>Confirmar e seguir seguidores</em> se a prévia estiver correta.
+                  </p>
+                </div>
+                <form onSubmit={handleSubmitFollowers} className="flex flex-col space-y-4">
+                <div>
+                  <label htmlFor="ff-target" className="mb-1 block text-sm font-medium text-slate-700">
+                    Perfil alvo
+                  </label>
+                  <input
+                    id="ff-target"
+                    type="text"
+                    autoComplete="off"
+                    placeholder="ex: nomedaconta"
+                    value={ffTarget}
+                    onChange={(e) => {
+                      setFfTarget(e.target.value)
+                      resetFollowersConfirmState()
+                    }}
+                    disabled={formBusy || !isSessionConnected}
+                    className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-slate-900 shadow-sm focus:border-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-300"
+                  />
+                  {ffPreviewError ? <p className="mt-2 text-sm text-rose-600">{ffPreviewError}</p> : null}
+                  {ffPreview && ffPreview.found ? (
+                    <div
+                      className={`mt-3 flex max-w-md gap-3 rounded-lg border p-3 text-sm text-slate-800 ${
+                        ffAwaitingConfirm
+                          ? "border-slate-900/15 bg-slate-50/90 ring-1 ring-slate-900/10"
+                          : "border-emerald-200 bg-emerald-50/60"
+                      }`}
+                    >
+                      {ffPreview.profilePicUrl ? (
+                        <img
+                          src={ffPreview.profilePicUrl}
+                          alt=""
+                          className="h-16 w-16 shrink-0 rounded-full object-cover ring-2 ring-white shadow-sm"
+                          referrerPolicy="no-referrer"
+                        />
+                      ) : (
+                        <div
+                          className="flex h-16 w-16 shrink-0 items-center justify-center rounded-full bg-slate-200 text-lg font-semibold text-slate-600 ring-2 ring-white"
+                          aria-hidden
+                        >
+                          @{ffPreview.username.slice(0, 2).toUpperCase()}
+                        </div>
+                      )}
+                      <div className="min-w-0">
+                        <p className="font-semibold text-slate-900">
+                          <a
+                            href={ffPreview.profileUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="hover:underline"
+                          >
+                            @{ffPreview.username}
+                          </a>
+                        </p>
+                        {ffPreview.fullName ? (
+                          <p className="text-slate-600">{ffPreview.fullName}</p>
+                        ) : null}
+                        {ffAwaitingConfirm ? (
+                          <p className="mt-1 text-xs text-slate-500">
+                            Se for a conta certa, clique em «Confirmar e seguir seguidores» abaixo.
+                          </p>
+                        ) : null}
+                      </div>
+                    </div>
+                  ) : null}
+                  {ffPreview && !ffPreview.found ? (
+                    <p className="mt-2 text-sm text-amber-800">
+                      Não foi possível localizar este perfil na verificação. Confira o @ e tente de novo. Se
+                      tiver certeza que o @ existe, a API do Instagram pode ter bloqueado a prévia — nesse
+                      caso não há o botão de confirmação.
                     </p>
                   ) : null}
                 </div>
-              </div>
-            ) : null}
-            {ffPreview && !ffPreview.found ? (
-              <p className="mt-2 text-sm text-amber-800">
-                Não foi possível localizar este perfil na verificação. Confira o @ e tente de novo. Se
-                tiver certeza que o @ existe, a API do Instagram pode ter bloqueado a prévia — nesse
-                caso não há o botão de confirmação.
-              </p>
-            ) : null}
-          </div>
-          <div>
-            <label htmlFor="ff-quantity" className="mb-1 block text-sm font-medium text-slate-700">
-              Quantidade (1 a 100)
-            </label>
-            <input
-              id="ff-quantity"
-              type="number"
-              min={1}
-              max={100}
-              value={ffQuantity}
-              onChange={(e) => setFfQuantity(Number(e.target.value))}
-              disabled={formBusy || !isSessionConnected}
-              className="w-full rounded-lg border border-slate-200 px-3 py-2 text-slate-900 shadow-sm focus:border-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-300 sm:w-56"
-            />
-          </div>
-          <div>
-            <label htmlFor="ff-filter" className="mb-1 block text-sm font-medium text-slate-700">
-              Filtro de privacidade
-            </label>
-            <select
-              id="ff-filter"
-              value={ffPrivacy}
-              onChange={(e) => setFfPrivacy(e.target.value as AutoFollowPrivacyFilter)}
-              disabled={formBusy || !isSessionConnected}
-              className="w-full rounded-lg border border-slate-200 px-3 py-2 text-slate-900 shadow-sm focus:border-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-300 sm:w-56"
-            >
-              <option value="any">Qualquer perfil</option>
-              <option value="public">Somente públicos</option>
-              <option value="private">Somente privados</option>
-            </select>
-          </div>
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <div>
+                    <label htmlFor="ff-quantity" className="mb-1 block text-sm font-medium text-slate-700">
+                      Quantidade (1 a 100)
+                    </label>
+                    <input
+                      id="ff-quantity"
+                      type="number"
+                      min={1}
+                      max={100}
+                      value={ffQuantity}
+                      onChange={(e) => setFfQuantity(Number(e.target.value))}
+                      disabled={formBusy || !isSessionConnected}
+                      className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-slate-900 shadow-sm focus:border-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-300"
+                    />
+                  </div>
+                  <div>
+                    <label htmlFor="ff-filter" className="mb-1 block text-sm font-medium text-slate-700">
+                      Filtro de privacidade
+                    </label>
+                    <select
+                      id="ff-filter"
+                      value={ffPrivacy}
+                      onChange={(e) => setFfPrivacy(e.target.value as AutoFollowPrivacyFilter)}
+                      disabled={formBusy || !isSessionConnected}
+                      className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-slate-900 shadow-sm focus:border-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-300"
+                    >
+                      <option value="any">Qualquer perfil</option>
+                      <option value="public">Somente públicos</option>
+                      <option value="private">Somente privados</option>
+                    </select>
+                  </div>
+                </div>
 
-          {ffError ? <p className="text-sm text-red-600">{ffError}</p> : null}
+                {ffError ? <p className="text-sm text-red-600">{ffError}</p> : null}
 
-          <div className="flex flex-wrap items-center gap-2">
-            {ffAwaitingConfirm ? (
-              <>
-                <button
-                  type="button"
-                  onClick={() => void runFollowersAfterPreviewConfirm()}
-                  disabled={ffSubmitting || !isSessionConnected}
-                  className={`inline-flex items-center gap-2 rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-70 disabled:shadow-none ${
-                    ffSubmitting ? "" : "ff-confirm-blink"
-                  }`}
-                >
-                  {ffSubmitting ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : <Play className="h-4 w-4" aria-hidden />}
-                  {ffSubmitting ? "Executando…" : "Confirmar e seguir seguidores"}
-                </button>
-                <button
-                  type="button"
-                  onClick={resetFollowersConfirmState}
-                  disabled={ffSubmitting}
-                  className="rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm text-slate-800 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  Ajustar @
-                </button>
+                <div className="flex flex-wrap items-center gap-2">
+                  {ffAwaitingConfirm ? (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => void runFollowersAfterPreviewConfirm()}
+                        disabled={ffSubmitting || !isSessionConnected}
+                        className={`inline-flex items-center gap-2 rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-70 disabled:shadow-none ${
+                          ffSubmitting ? "" : "ff-confirm-blink"
+                        }`}
+                      >
+                        {ffSubmitting ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : <Play className="h-4 w-4" aria-hidden />}
+                        {ffSubmitting ? "Executando…" : "Confirmar e seguir seguidores"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={resetFollowersConfirmState}
+                        disabled={ffSubmitting}
+                        className="rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm text-slate-800 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        Ajustar @
+                      </button>
+                    </>
+                  ) : (
+                    <button
+                      type="submit"
+                      disabled={formBusy || !isSessionConnected}
+                      className="inline-flex items-center gap-2 rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-70"
+                    >
+                      {ffPreviewLoading ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : <Play className="h-4 w-4" aria-hidden />}
+                      {ffPreviewLoading ? "Verificando perfil…" : "Iniciar (seguidores do perfil)"}
+                    </button>
+                  )}
+                </div>
+
+                {ffResult ? (
+                  <div className="mt-auto border-t border-slate-200/80 pt-4">
+                    <AutoFollowResultsPanel
+                      result={ffResult}
+                      resultTab={ffResultTab}
+                      setResultTab={setFfResultTab}
+                      extraSummary={
+                        <p className="text-sm text-slate-600">
+                          Perfil alvo:{" "}
+                          <a
+                            className="font-semibold text-slate-900 underline"
+                            href={`https://www.instagram.com/${encodeURIComponent(ffResult.targetUsername)}/`}
+                            target="_blank"
+                            rel="noreferrer"
+                          >
+                            @{ffResult.targetUsername}
+                          </a>{" "}
+                          · id {ffResult.targetUserId} · abertura: <code>{ffResult.profileOpenedVia}</code>
+                        </p>
+                      }
+                    />
+                  </div>
+                ) : null}
+              </form>
               </>
-            ) : (
-              <button
-                type="submit"
-                disabled={formBusy || !isSessionConnected}
-                className="inline-flex items-center gap-2 rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-70"
-              >
-                {ffPreviewLoading ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : <Play className="h-4 w-4" aria-hidden />}
-                {ffPreviewLoading ? "Verificando perfil…" : "Iniciar (seguidores do perfil)"}
-              </button>
             )}
-            <button
-              type="button"
-              onClick={() => void navigate("/connect-instagram")}
-              className="rounded-lg border border-slate-200 px-4 py-2 text-sm text-slate-700 hover:bg-slate-50"
-            >
-              Voltar para sessões
-            </button>
+          </div>
+        </section>
+
+        <section className="mt-8 border-t border-slate-100 pt-8 space-y-4" aria-labelledby="autofollow-schedule-heading">
+          <div className="flex items-start gap-3">
+            <CalendarClock className="mt-0.5 h-5 w-5 shrink-0 text-slate-500" aria-hidden />
+            <div>
+              <h4 id="autofollow-schedule-heading" className="text-sm font-semibold text-slate-900">
+                Agendamentos
+              </h4>
+              <p className="mt-1 text-xs leading-relaxed text-slate-500">
+                Defina datas ou recorrência e quantidade por disparo. O motor do backend executa nos horários configurados.
+              </p>
+            </div>
+          </div>
+          <div
+            role="tablist"
+            aria-label="Tipo de agenda"
+            className="flex w-full max-w-full flex-wrap gap-1 rounded-lg border border-slate-200 bg-slate-100/80 p-0.5"
+          >
+            {AUTOFOLLOW_SCHEDULE_SUB_TABS.map((st) => {
+              const sel = scheduleSubTab === st.id
+              return (
+                <button
+                  key={st.id}
+                  type="button"
+                  role="tab"
+                  id={`autofollow-schedule-tab-${st.id}`}
+                  aria-selected={sel}
+                  aria-controls="autofollow-schedule-panel"
+                  tabIndex={sel ? 0 : -1}
+                  onClick={() => setScheduleSubTab(st.id)}
+                  className={
+                    sel
+                      ? "rounded-md bg-white px-3 py-1.5 text-xs font-medium text-slate-900 shadow-sm"
+                      : "rounded-md px-3 py-1.5 text-xs font-medium text-slate-600 transition hover:bg-slate-200/70"
+                  }
+                >
+                  {st.label}
+                </button>
+              )
+            })}
           </div>
 
-          {ffResult ? (
-            <AutoFollowResultsPanel
-              result={ffResult}
-              resultTab={ffResultTab}
-              setResultTab={setFfResultTab}
-              extraSummary={
-                <p className="text-sm text-slate-600">
-                  Perfil alvo:{" "}
-                  <a
-                    className="font-semibold text-slate-900 underline"
-                    href={`https://www.instagram.com/${encodeURIComponent(ffResult.targetUsername)}/`}
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    @{ffResult.targetUsername}
-                  </a>{" "}
-                  · id {ffResult.targetUserId} · abertura: <code>{ffResult.profileOpenedVia}</code>
-                </p>
-              }
-            />
-          ) : null}
-        </form>
+          <div
+            role="tabpanel"
+            id="autofollow-schedule-panel"
+            aria-labelledby={`autofollow-schedule-tab-${scheduleSubTab}`}
+            className="space-y-4 rounded-lg border border-slate-200 bg-slate-50/80 p-4"
+          >
+            {scheduleMessage ? <p className="text-sm text-emerald-700">{scheduleMessage}</p> : null}
+            {scheduleError ? <p className="text-sm text-rose-600">{scheduleError}</p> : null}
+            {scheduleSubTab === "suggested"
+              ? renderSchedulePanel(
+                  "Agenda: seguir sugeridos",
+                  "suggested",
+                  suggestedDraft,
+                  setSuggestedDraft,
+                  suggestedSchedules,
+                )
+              : renderSchedulePanel(
+                  "Agenda: seguir seguidores de perfil",
+                  "followers",
+                  followersDraft,
+                  setFollowersDraft,
+                  followersSchedules,
+                )}
+          </div>
+        </section>
+
+        <footer className="mt-8 flex justify-end border-t border-slate-100 pt-4">
+          <button
+            type="button"
+            onClick={() => void navigate("/connect-instagram")}
+            className="rounded-lg border border-slate-200 px-4 py-2 text-sm text-slate-700 hover:bg-slate-50"
+          >
+            Voltar para sessões
+          </button>
+        </footer>
+      </div>
+        ) : null}
       </div>
     </div>
   )

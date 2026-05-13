@@ -327,7 +327,9 @@ export function InstaConnectProvider({ children }: { children: ReactNode }) {
   }, [])
 
   useEffect(() => {
-    void refreshSessions()
+    queueMicrotask(() => {
+      void refreshSessions()
+    })
   }, [refreshSessions])
 
   const value = useMemo<InstaConnectValue>(

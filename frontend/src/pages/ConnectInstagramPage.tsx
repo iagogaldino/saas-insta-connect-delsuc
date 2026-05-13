@@ -37,17 +37,19 @@ export function ConnectInstagramPage() {
     const targetSession = sessions.find((s) => s.id === reloginSessionId)
     if (!targetSession) return
 
-    setError("Sua sessão Instagram expirou. Faça login novamente nesta sessão.")
-    setPendingSessionId(targetSession.id)
-    setPreviousActiveSessionId(activeSessionId)
-    setShowConnectForm(true)
-    setShowTwoFactorForm(false)
-    setPendingTwoFactorUsername("")
-    setUsername(targetSession.instagramUsername ?? "")
-    setPassword("")
-    setSecurityCode("")
+    queueMicrotask(() => {
+      setError("Sua sessão Instagram expirou. Faça login novamente nesta sessão.")
+      setPendingSessionId(targetSession.id)
+      setPreviousActiveSessionId(activeSessionId)
+      setShowConnectForm(true)
+      setShowTwoFactorForm(false)
+      setPendingTwoFactorUsername("")
+      setUsername(targetSession.instagramUsername ?? "")
+      setPassword("")
+      setSecurityCode("")
 
-    void navigate("/app/connect-instagram", { replace: true })
+      void navigate("/app/connect-instagram", { replace: true })
+    })
   }, [searchParams, sessions, activeSessionId, navigate])
 
   async function handleSubmit(e: FormEvent<HTMLFormElement>) {

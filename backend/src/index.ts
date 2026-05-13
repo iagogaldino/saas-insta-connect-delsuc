@@ -1,4 +1,5 @@
 import "dotenv/config";
+import { createServer } from "node:http";
 import { rm } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
@@ -24,6 +25,7 @@ import {
 } from "./modules/insta/follow-schedule-time";
 import { authRoutes } from "./modules/auth/auth.routes";
 import { requireAuth } from "./modules/auth/auth.middleware";
+import { initInstaRealtime, type InstaRealtimeHandles } from "./realtime/insta-realtime";
 
 const app = express();
 const port = env.PORT;
@@ -70,6 +72,12 @@ type InstaRuntime = {
 
 const instaRuntimes = new Map<string, InstaRuntime>();
 const autoFollowJobs = new Map<string, AutoFollowJob>();
+
+let instaRealtime: InstaRealtimeHandles | null = null;
+
+function emitFollowScheduleTouch(userId: string, sessionId: string, reason: "executed" | "mutated"): void {
+  instaRealtime?.emitFollowScheduleTouch(userId, sessionId, reason);
+}
 
 type UserSessionState = {
   sessionIds: string[];
@@ -1958,6 +1966,7 @@ function runAutoFollowJobInBackground(job: AutoFollowJob, task: () => Promise<un
       job.error = e instanceof Error ? e.message : String(e);
     } finally {
       job.finishedAt = new Date().toISOString();
+      instaRealtime?.emitAutofollowJobToSubscribers(job);
     }
   })();
 }
@@ -2126,6 +2135,7 @@ async function executeSingleFollowSchedule(schedule: FollowScheduleDocLike): Pro
       { _id: schedule._id },
       { $set: { status: "completed", nextRunAt: null, lockedAt: null, lockOwner: null } },
     );
+    emitFollowScheduleTouch(schedule.userId, schedule.sessionId, "executed");
     return;
   }
 
@@ -2311,6 +2321,7 @@ async function executeSingleFollowSchedule(schedule: FollowScheduleDocLike): Pro
       },
     },
   );
+  emitFollowScheduleTouch(schedule.userId, schedule.sessionId, "executed");
 }
 
 const schedulerWorkerId = randomUUID();
@@ -2436,6 +2447,7 @@ async function processDueFollowSchedulesTick(): Promise<void> {
             },
           },
         );
+        emitFollowScheduleTouch(locked.userId, locked.sessionId, "executed");
       }
     }
   } finally {
@@ -2570,6 +2582,7 @@ app.post("/insta/follow-schedules", async (req, res) => {
     schedule.status = nextStatus;
     await schedule.save();
 
+    emitFollowScheduleTouch(userId, runtime.sessionId, "mutated");
     res.status(201).json({ ok: true, schedule: serializeFollowSchedule(schedule.toObject()) });
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
@@ -2761,6 +2774,7 @@ app.patch("/insta/follow-schedules/:scheduleId", async (req, res) => {
     }
     await current.save();
 
+    emitFollowScheduleTouch(userId, String(current.sessionId), "mutated");
     res.json({ ok: true, schedule: serializeFollowSchedule(current.toObject()) });
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
@@ -2781,6 +2795,7 @@ app.delete("/insta/follow-schedules/:scheduleId", async (req, res) => {
       res.status(404).json({ ok: false, error: "Agendamento não encontrado." });
       return;
     }
+    emitFollowScheduleTouch(userId, String(deleted.sessionId), "mutated");
     res.json({ ok: true });
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
@@ -2877,7 +2892,11 @@ async function bootstrap() {
       void processDueFollowSchedulesTick();
     }, 30_000);
     void processDueFollowSchedulesTick();
-    app.listen(port, () => {
+    const httpServer = createServer(app);
+    instaRealtime = initInstaRealtime(httpServer, {
+      getJob: (jobId) => autoFollowJobs.get(jobId),
+    });
+    httpServer.listen(port, () => {
       console.log(`Server listening on http://127.0.0.1:${port}`);
       void restorePersistedInstaRuntimes().catch((e) => {
         const message = e instanceof Error ? e.message : String(e);

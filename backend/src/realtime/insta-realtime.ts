@@ -29,9 +29,18 @@ function serializeAutofollowJob(job: AutoFollowJobLike) {
   };
 }
 
+export type FollowOutboundSuccessPayload = {
+  sessionId: string;
+  username: string;
+  fullName: string | null;
+  profilePicUrl: string | null;
+  followedAt: string;
+};
+
 export type InstaRealtimeHandles = {
   emitFollowScheduleTouch(userId: string, sessionId: string, reason: "executed" | "mutated"): void;
   emitAutofollowJobToSubscribers(job: AutoFollowJobLike): void;
+  emitFollowOutboundSuccess(userId: string, payload: FollowOutboundSuccessPayload): void;
 };
 
 export function initInstaRealtime(
@@ -43,7 +52,7 @@ export function initInstaRealtime(
     cors: { origin: "*" },
   });
 
-  io.use((socket, next) => {
+  io.use(async (socket, next) => {
     const auth = socket.handshake.auth as Record<string, unknown> | undefined;
     const tokenFromAuth = typeof auth?.token === "string" ? auth.token : undefined;
     const q = socket.handshake.query as Record<string, unknown>;
@@ -54,12 +63,16 @@ export function initInstaRealtime(
       return;
     }
     (socket.data as { userId: string }).userId = user.id;
-    void socket.join(`user:${user.id}`);
-    next();
+    try {
+      await socket.join(`user:${user.id}`);
+      next();
+    } catch (e) {
+      next(e instanceof Error ? e : new Error(String(e)));
+    }
   });
 
   io.on("connection", (socket: Socket) => {
-    socket.on("autofollow:subscribe", (jobIdUnknown: unknown) => {
+    socket.on("autofollow:subscribe", async (jobIdUnknown: unknown) => {
       const jobId = typeof jobIdUnknown === "string" ? jobIdUnknown.trim() : "";
       if (!jobId) {
         return;
@@ -75,7 +88,11 @@ export function initInstaRealtime(
         socket.emit("autofollow:job", payload);
         return;
       }
-      void socket.join(`autofollowJob:${jobId}`);
+      try {
+        await socket.join(`autofollowJob:${jobId}`);
+      } catch {
+        /* join falhou; cliente pode fazer fallback por HTTP */
+      }
     });
   });
 
@@ -86,6 +103,9 @@ export function initInstaRealtime(
     emitAutofollowJobToSubscribers(job) {
       const payload = { ok: true as const, job: serializeAutofollowJob(job) };
       io.to(`autofollowJob:${job.id}`).emit("autofollow:job", payload);
+    },
+    emitFollowOutboundSuccess(userId, payload) {
+      io.to(`user:${userId}`).emit("followOutbound:success", payload);
     },
   };
 }

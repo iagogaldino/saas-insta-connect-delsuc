@@ -1864,7 +1864,7 @@ async function persistFollowHistory(userId: string, sessionId: string, items: Ar
     .select("instagramUsername")
     .lean();
   const followedRows = items
-    .filter((item) => item.success === true)
+    .filter((item) => Boolean(item.success))
     .map((item) => ({
       userId,
       sessionId,
@@ -1881,6 +1881,15 @@ async function persistFollowHistory(userId: string, sessionId: string, items: Ar
     }));
   if (followedRows.length > 0) {
     await FollowHistoryModel.insertMany(followedRows, { ordered: false });
+    for (const row of followedRows) {
+      instaRealtime?.emitFollowOutboundSuccess(userId, {
+        sessionId: row.sessionId,
+        username: row.username,
+        fullName: row.fullName,
+        profilePicUrl: row.profilePicUrl,
+        followedAt: row.followedAt.toISOString(),
+      });
+    }
   }
 }
 

@@ -1,9 +1,9 @@
 import axios from "axios"
 import { CalendarClock, Loader2, Play, Users } from "lucide-react"
-import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from "react"
+import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from "react"
 import { useNavigate } from "react-router-dom"
+import { useInstaRealtime } from "../features/insta/insta-realtime-provider"
 import { useInstaConnect } from "../features/insta/use-insta-connect"
-import { readAuthToken } from "../lib/auth-session-storage"
 import { formatDateTimeBr, formatIsoDateBr } from "../lib/format-br"
 import {
   deleteFollowSchedule,
@@ -21,12 +21,12 @@ import {
   type AutoFollowResponse,
   type AutoFollowResultItem,
   type FollowScheduleItem,
+  type FollowScheduleTouchPayload,
   type InstaPreviewProfileResponse,
 } from "../lib/insta"
 import {
   AUTOFOLLOW_SOCKET_FALLBACK_POLL,
   AUTOFOLLOW_SOCKET_WAIT_TIMEOUT,
-  createInstaRealtimeSocket,
   waitForAutofollowJobOnSocket,
   waitForSocketConnected,
 } from "../lib/insta-realtime-socket"
@@ -296,7 +296,7 @@ function AutoFollowResultsPanel({
 export function ActiveSessionPage() {
   const navigate = useNavigate()
   const { activeSessionId, sessions, refreshSessions } = useInstaConnect()
-  const instaSocketRef = useRef<ReturnType<typeof createInstaRealtimeSocket> | null>(null)
+  const { socket } = useInstaRealtime()
   const [quantity, setQuantity] = useState(3)
   const [privacyFilter, setPrivacyFilter] = useState<AutoFollowPrivacyFilter>("any")
   const [isSubmitting, setIsSubmitting] = useState(false)
@@ -424,31 +424,16 @@ export function ActiveSessionPage() {
   }, [activeSessionId])
 
   useEffect(() => {
-    if (!activeSessionId) {
-      instaSocketRef.current?.disconnect()
-      instaSocketRef.current = null
-      return
+    if (!socket || !activeSessionId) return
+    const handler = (data: FollowScheduleTouchPayload) => {
+      if (data.sessionId !== activeSessionId) return
+      void refreshSchedules({ quiet: true })
     }
-    const token = readAuthToken()
-    if (!token) {
-      instaSocketRef.current?.disconnect()
-      instaSocketRef.current = null
-      return
-    }
-    const socket = createInstaRealtimeSocket(token, {
-      onFollowScheduleTouch(data) {
-        if (data.sessionId !== activeSessionId) return
-        void refreshSchedules({ quiet: true })
-      },
-    })
-    instaSocketRef.current = socket
+    socket.on("followSchedule:touch", handler)
     return () => {
-      socket.disconnect()
-      if (instaSocketRef.current === socket) {
-        instaSocketRef.current = null
-      }
+      socket.off("followSchedule:touch", handler)
     }
-  }, [activeSessionId, refreshSchedules])
+  }, [socket, activeSessionId, refreshSchedules])
 
   useEffect(() => {
     queueMicrotask(() => {
@@ -678,7 +663,6 @@ export function ActiveSessionPage() {
 
   async function waitForAutoFollowJobResult<T>(jobId: string): Promise<T> {
     const deadline = Date.now() + 30 * 60 * 1000
-    const socket = instaSocketRef.current
     if (socket) {
       const ready = await waitForSocketConnected(socket, 5_000)
       if (ready) {

@@ -1,12 +1,17 @@
 import { io, type Socket } from "socket.io-client"
 import { getInstaRealtimeSocketUrl } from "./config"
-import type { AutoFollowJobStatusResponse, FollowScheduleTouchPayload } from "./insta"
+import type {
+  AutoFollowJobStatusResponse,
+  FollowOutboundSuccessPayload,
+  FollowScheduleTouchPayload,
+} from "./insta"
 
 export type InstaRealtimeSocketHandlers = {
-  onFollowScheduleTouch: (payload: FollowScheduleTouchPayload) => void
+  onFollowScheduleTouch?: (payload: FollowScheduleTouchPayload) => void
+  onFollowOutboundSuccess?: (payload: FollowOutboundSuccessPayload) => void
 }
 
-export function createInstaRealtimeSocket(token: string, handlers: InstaRealtimeSocketHandlers): Socket {
+export function createInstaRealtimeSocket(token: string, handlers: InstaRealtimeSocketHandlers = {}): Socket {
   const socket = io(getInstaRealtimeSocketUrl(), {
     path: "/socket.io/",
     auth: { token },
@@ -15,7 +20,12 @@ export function createInstaRealtimeSocket(token: string, handlers: InstaRealtime
     reconnectionAttempts: 8,
     reconnectionDelay: 1_000,
   })
-  socket.on("followSchedule:touch", handlers.onFollowScheduleTouch)
+  if (handlers.onFollowScheduleTouch) {
+    socket.on("followSchedule:touch", handlers.onFollowScheduleTouch)
+  }
+  if (handlers.onFollowOutboundSuccess) {
+    socket.on("followOutbound:success", handlers.onFollowOutboundSuccess)
+  }
   return socket
 }
 

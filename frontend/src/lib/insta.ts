@@ -185,6 +185,15 @@ export type FollowScheduleTouchPayload = {
   reason: "executed" | "mutated"
 }
 
+/** Payload de `followOutbound:success` no Socket.IO (automação seguiu com sucesso). */
+export type FollowOutboundSuccessPayload = {
+  sessionId: string
+  username: string
+  fullName: string | null
+  profilePicUrl: string | null
+  followedAt: string
+}
+
 export async function getAutoFollowJobStatus(jobId: string) {
   return api.get<AutoFollowJobStatusResponse>(`/insta/auto-follow-jobs/${encodeURIComponent(jobId)}`)
 }

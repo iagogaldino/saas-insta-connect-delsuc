@@ -1,5 +1,5 @@
 import axios from "axios"
-import { CalendarClock, Loader2, Play, Users } from "lucide-react"
+import { CalendarClock, History, Loader2, Play, Users } from "lucide-react"
 import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from "react"
 import { useNavigate } from "react-router-dom"
 import { useInstaRealtime } from "../features/insta/insta-realtime-provider"
@@ -9,6 +9,7 @@ import {
   deleteFollowSchedule,
   getAutoFollowJobStatus,
   getFollowSchedules,
+  getFollowsMetrics,
   getInstaPreviewProfile,
   patchFollowSchedule,
   postFollowSchedule,
@@ -22,6 +23,8 @@ import {
   type AutoFollowResultItem,
   type FollowScheduleItem,
   type FollowScheduleTouchPayload,
+  type FollowScheduleStatus,
+  type FollowsMetricsResponse,
   type InstaPreviewProfileResponse,
 } from "../lib/insta"
 import {
@@ -59,6 +62,16 @@ type ScheduleDraft = {
   /** Meta opcional para concluir o agendamento; vazio = sem limite. */
   stopAfterFollowedInput: string
 }
+
+const SCHEDULE_HISTORY_STATUS_FILTERS: ReadonlyArray<{
+  id: FollowScheduleStatus | "all"
+  label: string
+}> = [
+  { id: "active", label: "Ativos" },
+  { id: "paused", label: "Pausados" },
+  { id: "completed", label: "Concluídos" },
+  { id: "all", label: "Todos" },
+]
 
 const SCHEDULE_STOP_CAP_MAX = 1_000_000
 
@@ -357,6 +370,12 @@ export function ActiveSessionPage() {
   const [activeFeatureTab, setActiveFeatureTab] = useState<SessionFeatureTab>(SESSION_FEATURE_TABS[0]!.id)
   const [manualSubTab, setManualSubTab] = useState<AutofollowFlowSubTab>("suggested")
   const [scheduleSubTab, setScheduleSubTab] = useState<AutofollowFlowSubTab>("suggested")
+  const [scheduleHistoryStatusFilter, setScheduleHistoryStatusFilter] = useState<FollowScheduleStatus | "all">(
+    "active",
+  )
+  const [sessionFollowRecent, setSessionFollowRecent] = useState<FollowsMetricsResponse["recent"]>([])
+  const [sessionFollowHistoryLoading, setSessionFollowHistoryLoading] = useState(false)
+  const [sessionFollowHistoryError, setSessionFollowHistoryError] = useState<string | null>(null)
 
   const formBusy =
     isSubmitting || ffSubmitting || ffPreviewLoading || incomingWebhookSaving || incomingWebhookTesting || scheduleLoading
@@ -422,6 +441,46 @@ export function ActiveSessionPage() {
       }
     }
   }, [activeSessionId])
+
+  const loadSessionFollowHistory = useCallback(async () => {
+    if (!activeSessionId) {
+      setSessionFollowRecent([])
+      return
+    }
+    setSessionFollowHistoryLoading(true)
+    setSessionFollowHistoryError(null)
+    try {
+      const { data } = await getFollowsMetrics(30, activeSessionId)
+      setSessionFollowRecent(data.recent)
+    } catch (e) {
+      if (axios.isAxiosError(e)) {
+        const body = e.response?.data as { error?: string } | undefined
+        setSessionFollowHistoryError(body?.error ?? e.message)
+      } else {
+        setSessionFollowHistoryError(e instanceof Error ? e.message : "Erro ao carregar histórico.")
+      }
+    } finally {
+      setSessionFollowHistoryLoading(false)
+    }
+  }, [activeSessionId])
+
+  useEffect(() => {
+    void loadSessionFollowHistory()
+  }, [loadSessionFollowHistory])
+
+  useEffect(() => {
+    if (!socket || !activeSessionId) return
+    const onFollowOutbound = (raw: unknown) => {
+      const p = raw as { sessionId?: string }
+      if (p.sessionId === activeSessionId) {
+        void loadSessionFollowHistory()
+      }
+    }
+    socket.on("followOutbound:success", onFollowOutbound)
+    return () => {
+      socket.off("followOutbound:success", onFollowOutbound)
+    }
+  }, [socket, activeSessionId, loadSessionFollowHistory])
 
   useEffect(() => {
     if (!socket || !activeSessionId) return
@@ -756,6 +815,7 @@ export function ActiveSessionPage() {
       const { data } = await postAutoFollowSuggested(quantity, privacyFilter)
       const finalResult = await waitForAutoFollowJobResult<AutoFollowResponse>(data.jobId)
       setResult(finalResult)
+      void loadSessionFollowHistory()
     } catch (e) {
       if (axios.isAxiosError(e)) {
         const body = e.response?.data as { error?: string } | undefined
@@ -830,6 +890,7 @@ export function ActiveSessionPage() {
       const { data } = await postAutoFollowFollowers(t, ffQuantity, ffPrivacy)
       const finalResult = await waitForAutoFollowJobResult<AutoFollowFollowersResponse>(data.jobId)
       setFfResult(finalResult)
+      void loadSessionFollowHistory()
       setFfAwaitingConfirm(false)
       setFfPreview(null)
     } catch (e) {
@@ -859,6 +920,13 @@ export function ActiveSessionPage() {
       Boolean(draft.dateInput) && isLocalDateTimeInThePast(draft.dateInput, draft.runTime)
     const hasInvalidSavedSlot =
       draft.cadence === "dates" && draft.entries.some((e) => isLocalDateTimeInThePast(e.date, draft.runTime))
+
+    const filteredScheduleItems =
+      items.length === 0
+        ? []
+        : scheduleHistoryStatusFilter === "all"
+          ? items
+          : items.filter((i) => i.status === scheduleHistoryStatusFilter)
 
     return (
       <div className="space-y-3 rounded-lg border border-slate-200 p-4">
@@ -1147,10 +1215,37 @@ export function ActiveSessionPage() {
           </p>
         ) : null}
         <div className="space-y-2">
+          <div
+            role="group"
+            aria-label="Filtrar agendamentos por status"
+            className="flex flex-wrap gap-1 rounded-lg border border-slate-200 bg-slate-100/80 p-0.5"
+          >
+            {SCHEDULE_HISTORY_STATUS_FILTERS.map((opt) => {
+              const selected = scheduleHistoryStatusFilter === opt.id
+              return (
+                <button
+                  key={opt.id}
+                  type="button"
+                  onClick={() => setScheduleHistoryStatusFilter(opt.id)}
+                  className={
+                    selected
+                      ? "rounded-md bg-white px-3 py-1.5 text-xs font-medium text-slate-900 shadow-sm"
+                      : "rounded-md px-3 py-1.5 text-xs font-medium text-slate-600 transition hover:bg-slate-200/70"
+                  }
+                >
+                  {opt.label}
+                </button>
+              )
+            })}
+          </div>
           {items.length === 0 ? (
             <p className="text-xs text-slate-500">Sem agendamentos salvos para este fluxo.</p>
+          ) : filteredScheduleItems.length === 0 ? (
+            <p className="text-xs text-slate-500">
+              Nenhum agendamento com este status. Escolha outro filtro ou &quot;Todos&quot;.
+            </p>
           ) : (
-            items.map((item) => (
+            filteredScheduleItems.map((item) => (
               <div key={item.id} className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-700">
                 <p>
                   Status: <strong>{item.status}</strong> · Próximo:{" "}
@@ -1244,7 +1339,7 @@ export function ActiveSessionPage() {
   }
 
   return (
-    <div className="max-w-3xl space-y-6">
+    <div className="mx-auto max-w-6xl space-y-6">
       <div className="space-y-2">
         <h2 className="text-xl font-semibold text-slate-900">Funcionalidades da sessão ativa</h2>
         <p className="text-sm text-slate-500">
@@ -1398,7 +1493,8 @@ export function ActiveSessionPage() {
       </div>
         ) : null}
         {activeFeatureTab === "autofollow" ? (
-      <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+      <div className="flex flex-col gap-6 lg:flex-row lg:items-start">
+        <div className="min-w-0 flex-1 rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
         <header className="border-b border-slate-100 pb-5">
           <div className="flex items-center gap-2 text-slate-800">
             <Users className="h-5 w-5 shrink-0" aria-hidden />
@@ -1778,6 +1874,68 @@ export function ActiveSessionPage() {
             Voltar para sessões
           </button>
         </footer>
+        </div>
+        <aside
+          className="w-full shrink-0 lg:sticky lg:top-4 lg:w-80 xl:w-[22rem]"
+          aria-label="Histórico de follows desta sessão"
+        >
+          <div className="flex max-h-[min(70vh,32rem)] flex-col rounded-xl border border-slate-200 bg-white p-4 shadow-sm lg:max-h-[calc(100vh-8rem)]">
+            <div className="mb-3 flex shrink-0 items-center gap-2 border-b border-slate-100 pb-3">
+              <History className="h-4 w-4 shrink-0 text-slate-500" aria-hidden />
+              <h3 className="text-sm font-semibold text-slate-900">Histórico desta sessão</h3>
+            </div>
+            <p className="mb-3 shrink-0 text-xs text-slate-500">Últimos registros salvos (30 dias).</p>
+            {sessionFollowHistoryError ? (
+              <p className="shrink-0 text-sm text-rose-600">{sessionFollowHistoryError}</p>
+            ) : null}
+            {sessionFollowHistoryLoading ? (
+              <div className="flex flex-1 items-center justify-center py-8 text-slate-500">
+                <Loader2 className="h-6 w-6 animate-spin" aria-hidden />
+              </div>
+            ) : sessionFollowRecent.length === 0 ? (
+              <p className="text-sm text-slate-500">Nenhum follow registrado ainda nesta sessão.</p>
+            ) : (
+              <ul className="min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
+                {sessionFollowRecent.map((item, idx) => {
+                  const href =
+                    item.href?.trim() ||
+                    (item.username ? `https://www.instagram.com/${encodeURIComponent(item.username)}/` : null)
+                  const rowClass =
+                    "flex items-center gap-2.5 rounded-lg border border-slate-200 bg-slate-50 p-2.5 transition hover:bg-slate-100"
+                  const inner = (
+                    <>
+                      {item.profilePicUrl ? (
+                        <img src={item.profilePicUrl} alt="" className="h-9 w-9 shrink-0 rounded-full object-cover" />
+                      ) : (
+                        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-slate-200 text-[10px] font-semibold text-slate-600">
+                          @{item.username.slice(0, 2).toUpperCase()}
+                        </div>
+                      )}
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-sm font-medium text-slate-800">
+                          @{item.username}
+                          {item.fullName ? ` · ${item.fullName}` : ""}
+                        </p>
+                        <p className="text-xs text-slate-500">{formatDateTimeBr(item.followedAt)}</p>
+                      </div>
+                    </>
+                  )
+                  return (
+                    <li key={`${item.username}-${item.followedAt}-${idx}`}>
+                      {href ? (
+                        <a href={href} target="_blank" rel="noreferrer" className={rowClass}>
+                          {inner}
+                        </a>
+                      ) : (
+                        <div className={rowClass}>{inner}</div>
+                      )}
+                    </li>
+                  )
+                })}
+              </ul>
+            )}
+          </div>
+        </aside>
       </div>
         ) : null}
       </div>

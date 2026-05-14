@@ -339,8 +339,13 @@ export type FollowsMetricsResponse = {
   }>
 }
 
-export async function getFollowsMetrics(days = 30) {
-  return api.get<FollowsMetricsResponse>("/insta/metrics/follows", { params: { days } })
+export async function getFollowsMetrics(days = 30, sessionId?: string) {
+  return api.get<FollowsMetricsResponse>("/insta/metrics/follows", {
+    params: {
+      days,
+      ...(sessionId ? { sessionId } : {}),
+    },
+  })
 }
 
 export type ConversationItem = {

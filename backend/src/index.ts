@@ -1289,9 +1289,16 @@ app.get("/insta/metrics/follows", async (req, res) => {
 
     const rawDays = typeof req.query.days === "string" ? parseInt(req.query.days, 10) : 30;
     const days = Number.isFinite(rawDays) ? Math.min(Math.max(rawDays, 1), 365) : 30;
+    const sessionIdForRecent =
+      typeof req.query.sessionId === "string" && req.query.sessionId.trim() ? req.query.sessionId.trim() : "";
     const since = new Date();
     since.setHours(0, 0, 0, 0);
     since.setDate(since.getDate() - (days - 1));
+
+    const recentFilter: { userId: string; sessionId?: string } = { userId };
+    if (sessionIdForRecent) {
+      recentFilter.sessionId = sessionIdForRecent;
+    }
 
     const [totalAllTime, totalInWindow, perDayRaw, lastFollows] = await Promise.all([
       FollowHistoryModel.countDocuments({ userId }),
@@ -1314,9 +1321,9 @@ app.get("/insta/metrics/follows", async (req, res) => {
         },
         { $sort: { _id: 1 } },
       ]),
-      FollowHistoryModel.find({ userId })
+      FollowHistoryModel.find(recentFilter)
         .sort({ followedAt: -1 })
-        .limit(20)
+        .limit(sessionIdForRecent ? 50 : 20)
         .lean(),
     ]);
 

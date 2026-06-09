@@ -4,7 +4,8 @@
   "version": "1.0.0",
   "workspaces": [
     "frontend",
-    "backend"
+    "backend",
+    "mobile"
   ],
   "scripts": {
     "dev": "concurrently \"npm run dev:backend\" \"npm run dev:frontend\"",
@@ -14,7 +15,8 @@
     "build:backend": "npm run build -w backend",
     "build": "npm run build:frontend && npm run build:backend",
     "start:backend": "npm run start -w backend",
-    "lint:frontend": "npm run lint -w frontend"
+    "lint:frontend": "npm run lint -w frontend",
+    "dev:mobile": "npm run start -w mobile"
   },
   "devDependencies": {
     "concurrently": "^9.2.1"

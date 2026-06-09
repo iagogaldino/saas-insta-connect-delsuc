@@ -20,6 +20,7 @@ import {
   type AutoFollowResponse,
   type InstaPreviewProfileResponse,
 } from "@/src/lib/insta"
+import { notifyAutoFollowComplete } from "@/src/lib/notifications"
 import { colors } from "@/src/theme/colors"
 import { spacing } from "@/src/theme/spacing"
 
@@ -55,6 +56,15 @@ export function SessionAutoFollowPanel({ onReloginRequired }: SessionAutoFollowP
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [previewLoading, setPreviewLoading] = useState(false)
 
+  async function handleAutoFollowSuccess(result: AutoFollowResponse | AutoFollowFollowersResponse) {
+    await notifyAutoFollowComplete({
+      followed: result.followed,
+      requested: result.requested,
+      targetUsername: "targetUsername" in result ? result.targetUsername : undefined,
+    })
+    navigateToResults(result)
+  }
+
   function navigateToResults(result: AutoFollowResponse | AutoFollowFollowersResponse) {
     router.push({
       pathname: "/(app)/results",
@@ -82,7 +92,7 @@ export function SessionAutoFollowPanel({ onReloginRequired }: SessionAutoFollowP
     try {
       const { data } = await postAutoFollowSuggested(quantity, privacyFilter)
       const finalResult = await waitForAutoFollowJobResult<AutoFollowResponse>(socket, data.jobId)
-      navigateToResults(finalResult)
+      await handleAutoFollowSuccess(finalResult)
     } catch (e) {
       if (axios.isAxiosError(e)) {
         const body = e.response?.data as { error?: string } | undefined
@@ -140,7 +150,7 @@ export function SessionAutoFollowPanel({ onReloginRequired }: SessionAutoFollowP
       const finalResult = await waitForAutoFollowJobResult<AutoFollowFollowersResponse>(socket, data.jobId)
       setAwaitingConfirm(false)
       setPreview(null)
-      navigateToResults(finalResult)
+      await handleAutoFollowSuccess(finalResult)
     } catch (e) {
       if (axios.isAxiosError(e)) {
         const body = e.response?.data as { error?: string } | undefined
@@ -246,7 +256,7 @@ export function SessionAutoFollowPanel({ onReloginRequired }: SessionAutoFollowP
           </>
         ) : (
           <View style={styles.actions}>
-            <Button title="Iniciar (sugeridos)" onPress={runSuggested} loading={isSubmitting} />
+            <Button title="Iniciar" onPress={runSuggested} loading={isSubmitting} />
           </View>
         )}
 

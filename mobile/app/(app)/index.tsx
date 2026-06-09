@@ -1,288 +1,122 @@
-import axios from "axios"
 import { useRouter } from "expo-router"
-import { useState } from "react"
+import { ChevronRight, Plus } from "lucide-react-native"
 import { Pressable, StyleSheet, Text, View } from "react-native"
 import { Avatar } from "@/src/components/ui/Avatar"
 import { Button } from "@/src/components/ui/Button"
 import { Card } from "@/src/components/ui/Card"
-import { Input } from "@/src/components/ui/Input"
-import { LoadingOverlay } from "@/src/components/ui/LoadingOverlay"
-import { QuantityStepper } from "@/src/components/ui/QuantityStepper"
 import { Screen } from "@/src/components/ui/Screen"
-import { SegmentedControl } from "@/src/components/ui/SegmentedControl"
+import { StatusBadge } from "@/src/components/ui/StatusBadge"
 import { useInstaConnect } from "@/src/features/insta/use-insta-connect"
-import { useInstaRealtime } from "@/src/features/insta/insta-realtime-provider"
-import { isReloginError, waitForAutoFollowJobResult } from "@/src/hooks/use-auto-follow-job"
-import {
-  getInstaPreviewProfile,
-  postAutoFollowFollowers,
-  postAutoFollowSuggested,
-  type AutoFollowFollowersResponse,
-  type AutoFollowPrivacyFilter,
-  type AutoFollowResponse,
-  type InstaPreviewProfileResponse,
-} from "@/src/lib/insta"
+import type { InstaSessionItem } from "@/src/features/insta/insta-connect-types"
 import { colors } from "@/src/theme/colors"
 import { spacing } from "@/src/theme/spacing"
 
-type FlowTab = "suggested" | "followers"
+function sessionStatusLabel(session: InstaSessionItem): string {
+  if (!session.instagramUsername) return "Não conectado"
+  if (session.requiresRelogin) return "Reconectar"
+  if (session.isRuntimeOn) return "Sessão ativa"
+  return "Conectado"
+}
 
-const PRIVACY_OPTIONS: ReadonlyArray<{ id: AutoFollowPrivacyFilter; label: string }> = [
-  { id: "any", label: "Qualquer" },
-  { id: "public", label: "Público" },
-  { id: "private", label: "Privado" },
-]
+function sessionStatusVariant(session: InstaSessionItem): "success" | "warning" | "error" {
+  if (!session.instagramUsername || session.requiresRelogin) return "warning"
+  return "success"
+}
 
-const FLOW_TABS: ReadonlyArray<{ id: FlowTab; label: string }> = [
-  { id: "suggested", label: "Sugeridos" },
-  { id: "followers", label: "Seguidores de @" },
-]
-
-export default function AutoFollowScreen() {
+export default function SessionsScreen() {
   const router = useRouter()
-  const { socket } = useInstaRealtime()
-  const { activeSessionId, sessions } = useInstaConnect()
-  const activeSession = sessions.find((s) => s.id === activeSessionId) ?? null
-  const isSessionConnected = Boolean(activeSession?.instagramUsername)
+  const { sessions, isManagingSessions, createSession } = useInstaConnect()
 
-  const [flowTab, setFlowTab] = useState<FlowTab>("suggested")
-  const [quantity, setQuantity] = useState(3)
-  const [privacyFilter, setPrivacyFilter] = useState<AutoFollowPrivacyFilter>("any")
-  const [targetUsername, setTargetUsername] = useState("")
-  const [preview, setPreview] = useState<InstaPreviewProfileResponse | null>(null)
-  const [awaitingConfirm, setAwaitingConfirm] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const [previewError, setPreviewError] = useState<string | null>(null)
-  const [isSubmitting, setIsSubmitting] = useState(false)
-  const [previewLoading, setPreviewLoading] = useState(false)
-
-  function goToConnect() {
-    router.push("/(app)/connect")
-  }
-
-  function navigateToResults(result: AutoFollowResponse | AutoFollowFollowersResponse) {
+  function openSession(sessionId: string) {
     router.push({
-      pathname: "/(app)/results",
-      params: {
-        requested: String(result.requested),
-        followed: String(result.followed),
-        attempted: String(result.attempted),
-        privacyFilter: result.privacyFilter,
-        results: JSON.stringify(result.results),
-        targetUsername: "targetUsername" in result ? result.targetUsername : "",
-      },
+      pathname: "/(app)/session/[sessionId]",
+      params: { sessionId },
     })
   }
 
-  function handleApiError(apiError: string) {
-    setError(apiError)
-    if (isReloginError(apiError)) {
-      goToConnect()
+  async function handleCreateSession() {
+    const result = await createSession(true)
+    if (result.success && result.activeSessionId) {
+      openSession(result.activeSessionId)
     }
-  }
-
-  async function runSuggested() {
-    setError(null)
-    setIsSubmitting(true)
-    try {
-      const { data } = await postAutoFollowSuggested(quantity, privacyFilter)
-      const finalResult = await waitForAutoFollowJobResult<AutoFollowResponse>(socket, data.jobId)
-      navigateToResults(finalResult)
-    } catch (e) {
-      if (axios.isAxiosError(e)) {
-        const body = e.response?.data as { error?: string } | undefined
-        handleApiError(body?.error ?? e.message)
-      } else {
-        setError(e instanceof Error ? e.message : "Erro desconhecido.")
-      }
-    } finally {
-      setIsSubmitting(false)
-    }
-  }
-
-  async function verifyProfile() {
-    setError(null)
-    setPreviewError(null)
-    const t = targetUsername.replace(/^@+/, "").trim()
-    if (!t) {
-      setError("Informe o nome de usuário do perfil alvo.")
-      return
-    }
-    setPreviewLoading(true)
-    setAwaitingConfirm(false)
-    setPreview(null)
-    try {
-      const { data } = await getInstaPreviewProfile(t)
-      setPreview(data)
-      if (data.found) {
-        setAwaitingConfirm(true)
-      } else {
-        setPreviewError("Perfil não encontrado. Verifique o @ informado.")
-      }
-    } catch (e) {
-      if (axios.isAxiosError(e)) {
-        const body = e.response?.data as { error?: string } | undefined
-        setPreviewError(body?.error ?? e.message)
-      } else {
-        setPreviewError(e instanceof Error ? e.message : "Não foi possível verificar o perfil.")
-      }
-    } finally {
-      setPreviewLoading(false)
-    }
-  }
-
-  async function runFollowers() {
-    setError(null)
-    setIsSubmitting(true)
-    const t = targetUsername.replace(/^@+/, "").trim()
-    if (!t) {
-      setError("Informe o nome de usuário do perfil alvo.")
-      setIsSubmitting(false)
-      return
-    }
-    try {
-      const { data } = await postAutoFollowFollowers(t, quantity, privacyFilter)
-      const finalResult = await waitForAutoFollowJobResult<AutoFollowFollowersResponse>(socket, data.jobId)
-      setAwaitingConfirm(false)
-      setPreview(null)
-      navigateToResults(finalResult)
-    } catch (e) {
-      if (axios.isAxiosError(e)) {
-        const body = e.response?.data as { error?: string } | undefined
-        handleApiError(body?.error ?? e.message)
-      } else {
-        setError(e instanceof Error ? e.message : "Erro desconhecido.")
-      }
-    } finally {
-      setIsSubmitting(false)
-    }
-  }
-
-  if (!isSessionConnected) {
-    return (
-      <Screen>
-        <Card style={styles.noticeCard}>
-          <Text style={styles.noticeTitle}>Conecte o Instagram</Text>
-          <Text style={styles.noticeText}>
-            Para seguir perfis automaticamente, conecte sua conta Instagram na aba Conta.
-          </Text>
-          <Button title="Ir para Conta" onPress={goToConnect} />
-        </Card>
-      </Screen>
-    )
   }
 
   return (
     <Screen>
-      <Text style={styles.title}>AutoFollow</Text>
-      <Text style={styles.subtitle}>
-        Sessão ativa: @{activeSession?.instagramUsername}
-      </Text>
+      <View style={styles.header}>
+        <View>
+          <Text style={styles.title}>Sessões</Text>
+          <Text style={styles.subtitle}>Toque em uma sessão para ver as funcionalidades</Text>
+        </View>
+        <Pressable
+          onPress={() => void handleCreateSession()}
+          disabled={isManagingSessions}
+          style={[styles.addButton, isManagingSessions && styles.addButtonDisabled]}
+        >
+          <Plus size={22} color={colors.primaryDark} />
+        </Pressable>
+      </View>
 
-      <SegmentedControl options={FLOW_TABS} value={flowTab} onChange={setFlowTab} />
-
-      <Card style={styles.card}>
-        <Text style={styles.sectionLabel}>Quantidade</Text>
-        <QuantityStepper value={quantity} onChange={setQuantity} />
-
-        <Text style={[styles.sectionLabel, styles.sectionGap]}>Filtro de privacidade</Text>
-        <View style={styles.privacyRow}>
-          {PRIVACY_OPTIONS.map((opt) => (
-            <Pressable
-              key={opt.id}
-              onPress={() => setPrivacyFilter(opt.id)}
-              style={[styles.privacyChip, privacyFilter === opt.id && styles.privacyChipActive]}
-            >
-              <Text
-                style={[
-                  styles.privacyChipText,
-                  privacyFilter === opt.id && styles.privacyChipTextActive,
-                ]}
-              >
-                {opt.label}
-              </Text>
+      {sessions.length === 0 ? (
+        <Card style={styles.emptyCard}>
+          <Text style={styles.emptyTitle}>Nenhuma sessão criada</Text>
+          <Text style={styles.emptyText}>
+            Crie uma sessão para conectar uma conta Instagram e usar o AutoFollow.
+          </Text>
+          <Button title="Nova sessão" onPress={handleCreateSession} loading={isManagingSessions} />
+        </Card>
+      ) : (
+        <View style={styles.list}>
+          {sessions.map((session) => (
+            <Pressable key={session.id} onPress={() => openSession(session.id)}>
+              <Card style={styles.sessionCard}>
+                <View style={styles.sessionRow}>
+                  <Avatar
+                    uri={session.instagramProfilePicUrl}
+                    username={session.instagramUsername ?? session.id.slice(0, 2)}
+                  />
+                  <View style={styles.sessionInfo}>
+                    <Text style={styles.sessionTitle}>
+                      {session.instagramUsername
+                        ? `@${session.instagramUsername}`
+                        : "Sessão sem Instagram"}
+                    </Text>
+                    {session.instagramFullName ? (
+                      <Text style={styles.sessionSubtitle}>{session.instagramFullName}</Text>
+                    ) : (
+                      <Text style={styles.sessionSubtitle} numberOfLines={1}>
+                        {session.id}
+                      </Text>
+                    )}
+                    <View style={styles.badges}>
+                      <StatusBadge
+                        label={sessionStatusLabel(session)}
+                        variant={sessionStatusVariant(session)}
+                      />
+                      {session.isActive ? (
+                        <StatusBadge label="Em uso" variant="neutral" />
+                      ) : null}
+                    </View>
+                  </View>
+                  <ChevronRight size={20} color={colors.textSecondary} />
+                </View>
+              </Card>
             </Pressable>
           ))}
         </View>
-
-        {flowTab === "followers" ? (
-          <>
-            <View style={styles.sectionGap}>
-              <Input
-                label="Perfil alvo"
-                placeholder="@usuario"
-                value={targetUsername}
-                onChangeText={(v) => {
-                  setTargetUsername(v)
-                  setAwaitingConfirm(false)
-                  setPreview(null)
-                  setPreviewError(null)
-                }}
-                autoCapitalize="none"
-                editable={!isSubmitting && !previewLoading}
-              />
-            </View>
-
-            {preview && awaitingConfirm ? (
-              <View style={styles.previewCard}>
-                <View style={styles.previewRow}>
-                  <Avatar uri={preview.profilePicUrl} username={preview.username} />
-                  <View style={styles.previewInfo}>
-                    <Text style={styles.previewUsername}>@{preview.username}</Text>
-                    {preview.fullName ? (
-                      <Text style={styles.previewName}>{preview.fullName}</Text>
-                    ) : null}
-                  </View>
-                </View>
-                <Text style={styles.previewHint}>
-                  Confirme se este é o perfil cujos seguidores serão seguidos.
-                </Text>
-              </View>
-            ) : null}
-
-            {previewError ? <Text style={styles.error}>{previewError}</Text> : null}
-
-            <View style={styles.actions}>
-              {awaitingConfirm ? (
-                <>
-                  <Button
-                    title="Confirmar e seguir"
-                    onPress={runFollowers}
-                    loading={isSubmitting}
-                  />
-                  <Button
-                    title="Cancelar"
-                    variant="ghost"
-                    onPress={() => {
-                      setAwaitingConfirm(false)
-                      setPreview(null)
-                    }}
-                  />
-                </>
-              ) : (
-                <Button
-                  title={previewLoading ? "Verificando..." : "Verificar perfil"}
-                  onPress={verifyProfile}
-                  loading={previewLoading}
-                />
-              )}
-            </View>
-          </>
-        ) : (
-          <View style={styles.actions}>
-            <Button title="Iniciar (sugeridos)" onPress={runSuggested} loading={isSubmitting} />
-          </View>
-        )}
-
-        {error ? <Text style={styles.error}>{error}</Text> : null}
-      </Card>
-
-      <LoadingOverlay visible={isSubmitting} message="Seguindo perfis..." />
+      )}
     </Screen>
   )
 }
 
 const styles = StyleSheet.create({
+  header: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    marginBottom: spacing.md,
+    gap: spacing.md,
+  },
   title: {
     fontSize: 28,
     fontWeight: "700",
@@ -292,99 +126,63 @@ const styles = StyleSheet.create({
   subtitle: {
     fontSize: 14,
     color: colors.textSecondary,
-    marginBottom: spacing.md,
+    maxWidth: 280,
   },
-  card: {
-    marginTop: spacing.md,
-    gap: spacing.sm,
-  },
-  sectionLabel: {
-    fontSize: 14,
-    fontWeight: "600",
-    color: colors.slate700,
-  },
-  sectionGap: {
-    marginTop: spacing.md,
-  },
-  privacyRow: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: spacing.sm,
-    marginTop: spacing.xs,
-  },
-  privacyChip: {
-    paddingHorizontal: spacing.sm + 4,
-    paddingVertical: spacing.sm,
-    borderRadius: 20,
-    borderWidth: 1,
-    borderColor: colors.border,
-    backgroundColor: colors.surface,
-  },
-  privacyChipActive: {
-    backgroundColor: colors.primaryLight,
-    borderColor: colors.primary,
-  },
-  privacyChipText: {
-    fontSize: 13,
-    color: colors.textSecondary,
-    fontWeight: "500",
-  },
-  privacyChipTextActive: {
-    color: colors.primaryDark,
-    fontWeight: "600",
-  },
-  previewCard: {
-    marginTop: spacing.md,
-    padding: spacing.md,
+  addButton: {
+    width: 44,
+    height: 44,
     borderRadius: 12,
-    backgroundColor: colors.background,
     borderWidth: 1,
-    borderColor: colors.border,
+    borderColor: colors.primary,
+    backgroundColor: colors.primaryLight,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  addButtonDisabled: {
+    opacity: 0.5,
+  },
+  list: {
     gap: spacing.sm,
   },
-  previewRow: {
+  sessionCard: {
+    paddingVertical: spacing.sm + 4,
+  },
+  sessionRow: {
     flexDirection: "row",
     alignItems: "center",
     gap: spacing.md,
   },
-  previewInfo: {
+  sessionInfo: {
     flex: 1,
+    gap: 4,
   },
-  previewUsername: {
+  sessionTitle: {
     fontSize: 16,
     fontWeight: "700",
     color: colors.text,
   },
-  previewName: {
-    fontSize: 14,
-    color: colors.textSecondary,
-    marginTop: 2,
-  },
-  previewHint: {
+  sessionSubtitle: {
     fontSize: 13,
     color: colors.textSecondary,
   },
-  actions: {
-    marginTop: spacing.md,
-    gap: spacing.sm,
+  badges: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: spacing.xs,
+    marginTop: spacing.xs,
   },
-  error: {
-    fontSize: 14,
-    color: colors.error,
-    marginTop: spacing.sm,
-  },
-  noticeCard: {
-    marginTop: spacing.xl,
+  emptyCard: {
+    marginTop: spacing.lg,
     gap: spacing.md,
     alignItems: "stretch",
   },
-  noticeTitle: {
+  emptyTitle: {
     fontSize: 18,
     fontWeight: "700",
-    color: colors.warning,
+    color: colors.text,
     textAlign: "center",
   },
-  noticeText: {
+  emptyText: {
     fontSize: 14,
     color: colors.textSecondary,
     textAlign: "center",

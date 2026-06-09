@@ -1,11 +1,14 @@
 import axios from "axios"
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react"
 import {
+  deleteInstaSession,
   getInstaSessions,
+  patchInstaActiveSession,
   postCreateInstaSession,
   postInstaLoginForSession,
   postInstaSubmitSecurityCodeForSession,
   postStartInstaSessionRuntime,
+  postStopInstaSessionRuntime,
 } from "@/src/lib/insta"
 import { InstaConnectContext } from "./insta-connect-context"
 import type { InstaLinkResult, InstaSessionItem, InstaSessionsResult } from "./insta-connect-types"
@@ -59,6 +62,24 @@ export function InstaConnectProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
+  const setActiveSession = useCallback(async (sessionId: string): Promise<InstaSessionsResult> => {
+    setIsManagingSessions(true)
+    try {
+      const { data } = await patchInstaActiveSession(sessionId)
+      setSessions(data.sessions)
+      setActiveSessionId(data.activeSessionId)
+      return { success: true, sessions: data.sessions, activeSessionId: data.activeSessionId }
+    } catch (e) {
+      if (axios.isAxiosError(e)) {
+        const body = e.response?.data as { error?: string } | undefined
+        return { success: false, error: body?.error ?? e.message }
+      }
+      return { success: false, error: e instanceof Error ? e.message : "Erro desconhecido." }
+    } finally {
+      setIsManagingSessions(false)
+    }
+  }, [])
+
   const startSessionRuntime = useCallback(async (sessionId: string): Promise<InstaSessionsResult> => {
     setIsManagingSessions(true)
     try {
@@ -72,6 +93,48 @@ export function InstaConnectProvider({ children }: { children: ReactNode }) {
         isInstagramAuthenticated: data.isInstagramAuthenticated,
         runtimeStatusMessage: data.runtimeStatusMessage,
       }
+    } catch (e) {
+      if (axios.isAxiosError(e)) {
+        const body = e.response?.data as { error?: string } | undefined
+        return { success: false, error: body?.error ?? e.message }
+      }
+      return { success: false, error: e instanceof Error ? e.message : "Erro desconhecido." }
+    } finally {
+      setIsManagingSessions(false)
+    }
+  }, [])
+
+  const stopSessionRuntime = useCallback(async (sessionId: string): Promise<InstaSessionsResult> => {
+    setIsManagingSessions(true)
+    try {
+      const { data } = await postStopInstaSessionRuntime(sessionId)
+      setSessions(data.sessions)
+      setActiveSessionId(data.activeSessionId)
+      return {
+        success: true,
+        sessions: data.sessions,
+        activeSessionId: data.activeSessionId,
+        isInstagramAuthenticated: data.isInstagramAuthenticated,
+        runtimeStatusMessage: data.runtimeStatusMessage,
+      }
+    } catch (e) {
+      if (axios.isAxiosError(e)) {
+        const body = e.response?.data as { error?: string } | undefined
+        return { success: false, error: body?.error ?? e.message }
+      }
+      return { success: false, error: e instanceof Error ? e.message : "Erro desconhecido." }
+    } finally {
+      setIsManagingSessions(false)
+    }
+  }, [])
+
+  const removeSession = useCallback(async (sessionId: string): Promise<InstaSessionsResult> => {
+    setIsManagingSessions(true)
+    try {
+      const { data } = await deleteInstaSession(sessionId)
+      setSessions(data.sessions)
+      setActiveSessionId(data.activeSessionId)
+      return { success: true, sessions: data.sessions, activeSessionId: data.activeSessionId }
     } catch (e) {
       if (axios.isAxiosError(e)) {
         const body = e.response?.data as { error?: string } | undefined
@@ -192,7 +255,10 @@ export function InstaConnectProvider({ children }: { children: ReactNode }) {
       activeSessionId,
       refreshSessions,
       createSession,
+      setActiveSession,
       startSessionRuntime,
+      stopSessionRuntime,
+      removeSession,
       connectInstagramToSession,
       submitSecurityCodeForSession,
     }),
@@ -202,7 +268,10 @@ export function InstaConnectProvider({ children }: { children: ReactNode }) {
       activeSessionId,
       refreshSessions,
       createSession,
+      setActiveSession,
       startSessionRuntime,
+      stopSessionRuntime,
+      removeSession,
       connectInstagramToSession,
       submitSecurityCodeForSession,
     ],

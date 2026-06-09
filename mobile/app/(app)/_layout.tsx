@@ -1,5 +1,5 @@
 import { Redirect, Tabs, useRouter } from "expo-router"
-import { Users, UserCircle } from "lucide-react-native"
+import { Layers, UserCircle } from "lucide-react-native"
 import { useEffect } from "react"
 import { ActivityIndicator, StyleSheet, View } from "react-native"
 import { useAuth } from "@/src/features/auth/use-auth"
@@ -54,8 +54,14 @@ export default function AppLayout() {
         <Tabs.Screen
           name="index"
           options={{
-            title: "AutoFollow",
-            tabBarIcon: ({ color, size }) => <Users color={color} size={size} />,
+            title: "Sessões",
+            tabBarIcon: ({ color, size }) => <Layers color={color} size={size} />,
+          }}
+        />
+        <Tabs.Screen
+          name="session/[sessionId]"
+          options={{
+            href: null,
           }}
         />
         <Tabs.Screen
@@ -67,6 +73,12 @@ export default function AppLayout() {
         />
         <Tabs.Screen
           name="results"
+          options={{
+            href: null,
+          }}
+        />
+        <Tabs.Screen
+          name="history"
           options={{
             href: null,
           }}

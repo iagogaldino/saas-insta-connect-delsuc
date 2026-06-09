@@ -55,8 +55,20 @@ export async function postCreateInstaSession(setAsActive = true) {
   return api.post<InstaSessionsResponse>("/insta/sessions", { setAsActive })
 }
 
+export async function patchInstaActiveSession(sessionId: string) {
+  return api.patch<InstaSessionsResponse>("/insta/sessions/active", { sessionId })
+}
+
 export async function postStartInstaSessionRuntime(sessionId: string) {
   return api.post<InstaSessionsResponse>(`/insta/sessions/${encodeURIComponent(sessionId)}/runtime/start`)
+}
+
+export async function postStopInstaSessionRuntime(sessionId: string) {
+  return api.post<InstaSessionsResponse>(`/insta/sessions/${encodeURIComponent(sessionId)}/runtime/stop`)
+}
+
+export async function deleteInstaSession(sessionId: string) {
+  return api.delete<InstaSessionsResponse>(`/insta/sessions/${encodeURIComponent(sessionId)}`)
 }
 
 export type AutoFollowPrivacyFilter = "any" | "public" | "private"
@@ -152,5 +164,40 @@ export type InstaPreviewProfileResponse = {
 export async function getInstaPreviewProfile(username: string) {
   return api.get<InstaPreviewProfileResponse>("/insta/preview-profile", {
     params: { username },
+  })
+}
+
+export type FollowsMetricsResponse = {
+  ok: true
+  days: number
+  totals: {
+    allTime: number
+    inWindow: number
+  }
+  perDay: Array<{
+    date: string
+    count: number
+  }>
+  recent: Array<{
+    username: string
+    fullName: string | null
+    profilePicUrl: string | null
+    href: string | null
+    instagramUserId: string | null
+    followedByInstagramUsername: string | null
+    isPrivate: boolean | null
+    isVerified: boolean | null
+    reason: string | null
+    sessionId: string
+    followedAt: string
+  }>
+}
+
+export async function getFollowsMetrics(days = 30, sessionId?: string) {
+  return api.get<FollowsMetricsResponse>("/insta/metrics/follows", {
+    params: {
+      days,
+      ...(sessionId ? { sessionId } : {}),
+    },
   })
 }

@@ -119,39 +119,36 @@ export default function SessionDetailScreen() {
         <View style={styles.content}>
           <SessionManagePanel session={session} />
 
-          {canAutoFollow && session.instagramUsername ? (
-            <SessionAutoFollowPanel />
-          ) : isConnected ? (
-            <View style={styles.hintBox}>
-              <Text style={styles.hintTitle}>AutoFollow indisponível</Text>
-              <Text style={styles.hintText}>
-                {session.requiresRelogin
-                  ? "Reconecte o Instagram nesta sessão para continuar."
-                  : "Inicie a sessão acima para usar o AutoFollow."}
-              </Text>
-            </View>
-          ) : (
-            <View style={styles.hintBox}>
-              <Text style={styles.hintTitle}>AutoFollow</Text>
-              <Text style={styles.hintText}>
-                Conecte uma conta Instagram nesta sessão para liberar o AutoFollow.
-              </Text>
-            </View>
-          )}
+          {isConnected ? (
+            <>
+              {canAutoFollow ? (
+                <SessionAutoFollowPanel />
+              ) : (
+                <View style={styles.hintBox}>
+                  <Text style={styles.hintTitle}>AutoFollow indisponível</Text>
+                  <Text style={styles.hintText}>
+                    {session.requiresRelogin
+                      ? "Reconecte o Instagram nesta sessão para continuar."
+                      : "Inicie a sessão acima para usar o AutoFollow."}
+                  </Text>
+                </View>
+              )}
+
+              <Button
+                title="Ver histórico"
+                variant="secondary"
+                onPress={() =>
+                  router.push({
+                    pathname: "/(app)/history",
+                    params: { sessionId },
+                  })
+                }
+              />
+            </>
+          ) : null}
 
           {activateError ? <Text style={styles.error}>{activateError}</Text> : null}
           {removeError ? <Text style={styles.error}>{removeError}</Text> : null}
-
-          <Button
-            title="Ver histórico"
-            variant="secondary"
-            onPress={() =>
-              router.push({
-                pathname: "/(app)/history",
-                params: { sessionId },
-              })
-            }
-          />
 
           <Button
             title="Remover sessão"

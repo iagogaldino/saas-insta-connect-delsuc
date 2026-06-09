@@ -14,12 +14,25 @@ export default function LoginScreen() {
   const router = useRouter()
   const [email, setEmail] = useState("")
   const [password, setPassword] = useState("")
+  const [confirmPassword, setConfirmPassword] = useState("")
   const [isRegisterMode, setIsRegisterMode] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
 
+  function toggleAuthMode() {
+    setIsRegisterMode((v) => !v)
+    setConfirmPassword("")
+    setError(null)
+  }
+
   async function handleSubmit() {
     setError(null)
+
+    if (isRegisterMode && password !== confirmPassword) {
+      setError("As senhas não coincidem.")
+      return
+    }
+
     setIsSubmitting(true)
     const result = isRegisterMode ? await register(email, password) : await login(email, password)
     setIsSubmitting(false)
@@ -54,9 +67,19 @@ export default function LoginScreen() {
               value={password}
               onChangeText={setPassword}
               secureTextEntry
-              autoComplete="password"
+              autoComplete={isRegisterMode ? "new-password" : "password"}
               editable={!isSubmitting}
             />
+            {isRegisterMode ? (
+              <Input
+                label="Confirmar senha"
+                value={confirmPassword}
+                onChangeText={setConfirmPassword}
+                secureTextEntry
+                autoComplete="new-password"
+                editable={!isSubmitting}
+              />
+            ) : null}
             {error ? <Text style={styles.error}>{error}</Text> : null}
             <Button
               title={isRegisterMode ? "Criar conta" : "Entrar"}
@@ -65,7 +88,7 @@ export default function LoginScreen() {
             />
           </View>
 
-          <Pressable onPress={() => setIsRegisterMode((v) => !v)} disabled={isSubmitting}>
+          <Pressable onPress={toggleAuthMode} disabled={isSubmitting}>
             <Text style={styles.toggle}>
               {isRegisterMode ? "Já tem conta? Fazer login" : "Não tem conta? Criar conta"}
             </Text>

@@ -1377,11 +1377,6 @@ export function ActiveSessionPage() {
               }
             >
               {tab.label}
-              {tab.isNew ? (
-                <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-emerald-800">
-                  Novo
-                </span>
-              ) : null}
             </button>
           )
         })}

@@ -20,5 +20,8 @@
   },
   "devDependencies": {
     "concurrently": "^9.2.1"
+  },
+  "dependencies": {
+    "expo-router": "~56.2.9"
   }
 }

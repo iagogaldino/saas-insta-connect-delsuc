@@ -1,15 +1,27 @@
+import { NavigationBar } from "expo-navigation-bar"
 import { Redirect, Tabs, useRouter } from "expo-router"
 import { Layers, UserCircle } from "lucide-react-native"
 import { useEffect } from "react"
-import { ActivityIndicator, StyleSheet, View } from "react-native"
+import { ActivityIndicator, Platform, StyleSheet, View } from "react-native"
+import { useSafeAreaInsets } from "react-native-safe-area-context"
 import { useAuth } from "@/src/features/auth/use-auth"
 import { InstaConnectProvider } from "@/src/features/insta/insta-connect-provider"
 import { setOnUnauthorized } from "@/src/lib/auth-nav"
 import { colors } from "@/src/theme/colors"
+import { spacing } from "@/src/theme/spacing"
+
+const TAB_BAR_PADDING_TOP = spacing.sm
+const TAB_BAR_CONTENT_HEIGHT = 48
 
 export default function AppLayout() {
   const { isAuthenticated, isLoading, logout } = useAuth()
   const router = useRouter()
+  const insets = useSafeAreaInsets()
+  const tabBarBottomInset = Math.max(
+    insets.bottom,
+    Platform.OS === "android" ? spacing.md : spacing.sm,
+  )
+  const tabBarHeight = TAB_BAR_CONTENT_HEIGHT + TAB_BAR_PADDING_TOP + tabBarBottomInset
 
   useEffect(() => {
     setOnUnauthorized(() => {
@@ -33,6 +45,7 @@ export default function AppLayout() {
 
   return (
     <InstaConnectProvider>
+      {Platform.OS === "android" ? <NavigationBar style="dark" /> : null}
       <Tabs
         screenOptions={{
           headerShown: false,
@@ -40,10 +53,11 @@ export default function AppLayout() {
           tabBarInactiveTintColor: colors.textSecondary,
           tabBarStyle: {
             backgroundColor: colors.surface,
+            borderTopWidth: 1,
             borderTopColor: colors.border,
-            height: 60,
-            paddingBottom: 8,
-            paddingTop: 8,
+            height: tabBarHeight,
+            paddingTop: TAB_BAR_PADDING_TOP,
+            paddingBottom: tabBarBottomInset,
           },
           tabBarLabelStyle: {
             fontSize: 12,

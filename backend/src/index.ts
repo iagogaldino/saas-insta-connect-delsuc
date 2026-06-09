@@ -1,5 +1,6 @@
 import "dotenv/config";
 import { createServer } from "node:http";
+import { networkInterfaces } from "node:os";
 import { rm } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
@@ -29,6 +30,20 @@ import { initInstaRealtime, type InstaRealtimeHandles } from "./realtime/insta-r
 
 const app = express();
 const port = env.PORT;
+
+function getLanIpv4Addresses(): string[] {
+  const addresses = new Set<string>();
+  for (const interfaces of Object.values(networkInterfaces())) {
+    for (const iface of interfaces ?? []) {
+      const family = String(iface.family);
+      if (family !== "IPv4" && family !== "4") continue;
+      if (iface.internal) continue;
+      if (iface.address.startsWith("169.254.")) continue;
+      addresses.add(iface.address);
+    }
+  }
+  return [...addresses];
+}
 
 /** Pasta do pacote backend (`src/` ou `dist/` → um nível acima = raiz do backend). `process.cwd()` varia com monorepo/npm e quebrava o caminho `.session/`. */
 const BACKEND_ROOT = path.resolve(__dirname, "..");
@@ -2912,8 +2927,11 @@ async function bootstrap() {
     instaRealtime = initInstaRealtime(httpServer, {
       getJob: (jobId) => autoFollowJobs.get(jobId),
     });
-    httpServer.listen(port, () => {
+    httpServer.listen(port, "0.0.0.0", () => {
       console.log(`Server listening on http://127.0.0.1:${port}`);
+      for (const address of getLanIpv4Addresses()) {
+        console.log(`LAN access: http://${address}:${port}`);
+      }
       void restorePersistedInstaRuntimes().catch((e) => {
         const message = e instanceof Error ? e.message : String(e);
         console.error(`[insta-auth] runtime:boot-restore:unhandled ${message}`);

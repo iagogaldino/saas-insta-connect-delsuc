@@ -85,19 +85,12 @@ export default function SessionsScreen() {
                     </Text>
                     {session.instagramFullName ? (
                       <Text style={styles.sessionSubtitle}>{session.instagramFullName}</Text>
-                    ) : (
-                      <Text style={styles.sessionSubtitle} numberOfLines={1}>
-                        {session.id}
-                      </Text>
-                    )}
+                    ) : null}
                     <View style={styles.badges}>
                       <StatusBadge
                         label={sessionStatusLabel(session)}
                         variant={sessionStatusVariant(session)}
                       />
-                      {session.isActive ? (
-                        <StatusBadge label="Em uso" variant="neutral" />
-                      ) : null}
                     </View>
                   </View>
                   <ChevronRight size={20} color={colors.textSecondary} />

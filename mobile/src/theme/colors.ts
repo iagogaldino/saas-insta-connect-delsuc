@@ -14,4 +14,5 @@ export const colors = {
   slate200: "#E2E8F0",
   slate700: "#334155",
   slate800: "#1E293B",
+  navBar: "#000000",
 } as const

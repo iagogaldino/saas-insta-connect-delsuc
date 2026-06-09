@@ -1,13 +1,18 @@
 import { useRouter } from "expo-router"
 import { useState } from "react"
-import { Pressable, StyleSheet, Text, View } from "react-native"
+import { StyleSheet, Text, View } from "react-native"
 import { Button } from "@/src/components/ui/Button"
-import { Card } from "@/src/components/ui/Card"
 import { Input } from "@/src/components/ui/Input"
 import { Screen } from "@/src/components/ui/Screen"
+import { SegmentedControl } from "@/src/components/ui/SegmentedControl"
 import { useAuth } from "@/src/features/auth/use-auth"
 import { colors } from "@/src/theme/colors"
-import { spacing } from "@/src/theme/spacing"
+import { radius, spacing } from "@/src/theme/spacing"
+
+const AUTH_MODES = [
+  { id: "login" as const, label: "Entrar" },
+  { id: "register" as const, label: "Criar conta" },
+]
 
 export default function LoginScreen() {
   const { login, register } = useAuth()
@@ -15,12 +20,14 @@ export default function LoginScreen() {
   const [email, setEmail] = useState("")
   const [password, setPassword] = useState("")
   const [confirmPassword, setConfirmPassword] = useState("")
-  const [isRegisterMode, setIsRegisterMode] = useState(false)
+  const [authMode, setAuthMode] = useState<"login" | "register">("login")
   const [error, setError] = useState<string | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
 
-  function toggleAuthMode() {
-    setIsRegisterMode((v) => !v)
+  const isRegisterMode = authMode === "register"
+
+  function handleAuthModeChange(mode: "login" | "register") {
+    setAuthMode(mode)
     setConfirmPassword("")
     setError(null)
   }
@@ -44,93 +51,108 @@ export default function LoginScreen() {
   }
 
   return (
-    <Screen>
-      <View style={styles.center}>
-        <Card style={styles.card}>
-          <Text style={styles.logo}>InstagramConnect</Text>
+    <Screen style={styles.screen}>
+      <View style={styles.container}>
+        <View style={styles.header}>
+          <Text style={styles.title}>Insta Connect</Text>
           <Text style={styles.subtitle}>
-            {isRegisterMode ? "Criar conta no painel" : "Login do painel"}
+            {isRegisterMode
+              ? "Crie sua conta para gerenciar sessões e AutoFollow."
+              : "Acesse sua conta para continuar."}
           </Text>
+        </View>
 
-          <View style={styles.form}>
+        <SegmentedControl options={AUTH_MODES} value={authMode} onChange={handleAuthModeChange} />
+
+        <View style={styles.form}>
+          <Input
+            label="E-mail"
+            placeholder="seu@email.com"
+            value={email}
+            onChangeText={setEmail}
+            autoCapitalize="none"
+            keyboardType="email-address"
+            autoComplete="email"
+            editable={!isSubmitting}
+          />
+          <Input
+            label="Senha"
+            placeholder="••••••••"
+            value={password}
+            onChangeText={setPassword}
+            secureTextEntry
+            autoComplete={isRegisterMode ? "new-password" : "password"}
+            editable={!isSubmitting}
+          />
+          {isRegisterMode ? (
             <Input
-              label="E-mail"
-              value={email}
-              onChangeText={setEmail}
-              autoCapitalize="none"
-              keyboardType="email-address"
-              autoComplete="email"
-              editable={!isSubmitting}
-            />
-            <Input
-              label="Senha"
-              value={password}
-              onChangeText={setPassword}
+              label="Confirmar senha"
+              placeholder="••••••••"
+              value={confirmPassword}
+              onChangeText={setConfirmPassword}
               secureTextEntry
-              autoComplete={isRegisterMode ? "new-password" : "password"}
+              autoComplete="new-password"
               editable={!isSubmitting}
             />
-            {isRegisterMode ? (
-              <Input
-                label="Confirmar senha"
-                value={confirmPassword}
-                onChangeText={setConfirmPassword}
-                secureTextEntry
-                autoComplete="new-password"
-                editable={!isSubmitting}
-              />
-            ) : null}
-            {error ? <Text style={styles.error}>{error}</Text> : null}
-            <Button
-              title={isRegisterMode ? "Criar conta" : "Entrar"}
-              onPress={handleSubmit}
-              loading={isSubmitting}
-            />
-          </View>
+          ) : null}
 
-          <Pressable onPress={toggleAuthMode} disabled={isSubmitting}>
-            <Text style={styles.toggle}>
-              {isRegisterMode ? "Já tem conta? Fazer login" : "Não tem conta? Criar conta"}
-            </Text>
-          </Pressable>
-        </Card>
+          {error ? (
+            <View style={styles.errorBox}>
+              <Text style={styles.error}>{error}</Text>
+            </View>
+          ) : null}
+
+          <Button
+            title={isRegisterMode ? "Criar conta" : "Entrar"}
+            onPress={handleSubmit}
+            loading={isSubmitting}
+            style={styles.submitButton}
+          />
+        </View>
       </View>
     </Screen>
   )
 }
 
 const styles = StyleSheet.create({
-  center: {
+  screen: {
+    paddingTop: spacing.xl,
+  },
+  container: {
     flex: 1,
-    justifyContent: "center",
+    gap: spacing.lg,
   },
-  card: {
-    gap: spacing.md,
+  header: {
+    gap: spacing.sm,
+    marginBottom: spacing.sm,
   },
-  logo: {
-    fontSize: 26,
-    fontWeight: "700",
+  title: {
+    fontSize: 28,
+    fontWeight: "800",
     color: colors.text,
-    textAlign: "center",
+    letterSpacing: -0.5,
   },
   subtitle: {
-    fontSize: 14,
+    fontSize: 15,
     color: colors.textSecondary,
-    textAlign: "center",
+    lineHeight: 22,
+    maxWidth: 320,
   },
   form: {
-    marginTop: spacing.sm,
     gap: spacing.md,
+  },
+  errorBox: {
+    backgroundColor: colors.errorLight,
+    borderRadius: radius.md,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm + 2,
   },
   error: {
     fontSize: 14,
     color: colors.error,
+    lineHeight: 20,
   },
-  toggle: {
+  submitButton: {
     marginTop: spacing.sm,
-    textAlign: "center",
-    color: colors.primary,
-    fontWeight: "600",
-    fontSize: 14,
   },
 })

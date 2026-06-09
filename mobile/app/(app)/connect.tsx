@@ -18,7 +18,7 @@ export default function AccountScreen() {
   }
 
   return (
-    <Screen header={<ScreenHeader title="Conta" subtitle="Painel InstagramConnect" />}>
+    <Screen header={<ScreenHeader title="Conta" subtitle="Painel Insta Connect" />}>
       <Card style={styles.card}>
         <Text style={styles.label}>E-mail</Text>
         <Text style={styles.email}>{userEmail}</Text>

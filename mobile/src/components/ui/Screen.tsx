@@ -8,9 +8,10 @@ type ScreenProps = {
   children: ReactNode
   scroll?: boolean
   style?: ViewStyle
+  header?: ReactNode
 }
 
-export function Screen({ children, scroll = true, style }: ScreenProps) {
+export function Screen({ children, scroll = true, style, header }: ScreenProps) {
   const content = scroll ? (
     <ScrollView
       contentContainerStyle={[styles.scrollContent, style]}
@@ -25,6 +26,7 @@ export function Screen({ children, scroll = true, style }: ScreenProps) {
 
   return (
     <SafeAreaView style={styles.safe} edges={["top", "left", "right"]}>
+      {header}
       {content}
     </SafeAreaView>
   )

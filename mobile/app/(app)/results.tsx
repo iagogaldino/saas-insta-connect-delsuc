@@ -2,9 +2,9 @@ import { useLocalSearchParams, useRouter } from "expo-router"
 import { useMemo, useState } from "react"
 import { StyleSheet, Text, View } from "react-native"
 import { Avatar } from "@/src/components/ui/Avatar"
-import { Button } from "@/src/components/ui/Button"
 import { Card } from "@/src/components/ui/Card"
 import { Screen } from "@/src/components/ui/Screen"
+import { ScreenHeader } from "@/src/components/ui/ScreenHeader"
 import { SegmentedControl } from "@/src/components/ui/SegmentedControl"
 import { StatusBadge } from "@/src/components/ui/StatusBadge"
 import type { AutoFollowResultItem } from "@/src/lib/insta"
@@ -43,11 +43,21 @@ export default function ResultsScreen() {
   const followed = Number(params.followed ?? 0)
   const attempted = Number(params.attempted ?? 0)
   const targetUsername = params.targetUsername?.trim()
+  const subtitle = targetUsername
+    ? `AutoFollow · seguidores de @${targetUsername}`
+    : "AutoFollow · sugeridos"
 
   return (
-    <Screen>
-      <Text style={styles.title}>Resultado</Text>
-
+    <Screen
+      header={
+        <ScreenHeader
+          title="Resultado"
+          subtitle={subtitle}
+          onBack={() => router.back()}
+          backLabel="Sessão"
+        />
+      }
+    >
       <Card style={styles.summary}>
         <Text style={styles.summaryText}>
           Seguiu <Text style={styles.bold}>{followed}</Text> de{" "}
@@ -107,18 +117,11 @@ export default function ResultsScreen() {
         )}
       </View>
 
-      <Button title="Voltar ao AutoFollow" onPress={() => router.back()} style={styles.back} />
     </Screen>
   )
 }
 
 const styles = StyleSheet.create({
-  title: {
-    fontSize: 28,
-    fontWeight: "700",
-    color: colors.text,
-    marginBottom: spacing.md,
-  },
   summary: {
     marginBottom: spacing.md,
     gap: spacing.xs,
@@ -177,8 +180,5 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: colors.textSecondary,
     textAlign: "center",
-  },
-  back: {
-    marginTop: spacing.lg,
   },
 })

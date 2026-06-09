@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react"
-import { Alert, Platform, StyleSheet, Text, View } from "react-native"
+import { StyleSheet, Text, View } from "react-native"
 import { Avatar } from "@/src/components/ui/Avatar"
 import { Button } from "@/src/components/ui/Button"
 import { Card } from "@/src/components/ui/Card"
@@ -12,16 +12,13 @@ import { spacing } from "@/src/theme/spacing"
 
 type SessionManagePanelProps = {
   session: InstaSessionItem
-  onDisconnected?: () => void
 }
 
-export function SessionManagePanel({ session, onDisconnected }: SessionManagePanelProps) {
+export function SessionManagePanel({ session }: SessionManagePanelProps) {
   const {
     isManagingSessions,
-    createSession,
     startSessionRuntime,
     stopSessionRuntime,
-    removeSession,
     connectInstagramToSession,
     submitSecurityCodeForSession,
     refreshSessions,
@@ -114,45 +111,6 @@ export function SessionManagePanel({ session, onDisconnected }: SessionManagePan
     setIsSubmitting(false)
   }
 
-  async function runDisconnectInstagram() {
-    setError(null)
-    setNotice(null)
-    setIsSubmitting(true)
-
-    const removeResult = await removeSession(session.id)
-    if (!removeResult.success) {
-      setError(removeResult.error)
-      setIsSubmitting(false)
-      return
-    }
-
-    await createSession(true)
-    setUsername("")
-    setPassword("")
-    setSecurityCode("")
-    setShowTwoFactor(false)
-    setNotice("Instagram desconectado.")
-    setIsSubmitting(false)
-    onDisconnected?.()
-  }
-
-  function handleDisconnectInstagram() {
-    const message =
-      "Isso remove o vínculo com a conta Instagram desta sessão. Você precisará conectar novamente."
-
-    if (Platform.OS === "web") {
-      if (window.confirm(`Desconectar Instagram?\n\n${message}`)) {
-        void runDisconnectInstagram()
-      }
-      return
-    }
-
-    Alert.alert("Desconectar Instagram", message, [
-      { text: "Cancelar", style: "cancel" },
-      { text: "Desconectar", style: "destructive", onPress: () => void runDisconnectInstagram() },
-    ])
-  }
-
   return (
     <Card style={styles.card}>
       <Text style={styles.sectionTitle}>Status Instagram</Text>
@@ -167,10 +125,6 @@ export function SessionManagePanel({ session, onDisconnected }: SessionManagePan
             {session.instagramFullName ? (
               <Text style={styles.igName}>{session.instagramFullName}</Text>
             ) : null}
-            <StatusBadge
-              label={session.isRuntimeOn ? "Sessão ativa" : "Conectado"}
-              variant="success"
-            />
           </View>
         </View>
       ) : (
@@ -196,16 +150,6 @@ export function SessionManagePanel({ session, onDisconnected }: SessionManagePan
           variant="secondary"
           onPress={handleStopRuntime}
           loading={isSubmitting || isManagingSessions}
-        />
-      ) : null}
-
-      {isConnected ? (
-        <Button
-          title="Desconectar Instagram"
-          variant="ghost"
-          onPress={handleDisconnectInstagram}
-          loading={isSubmitting || isManagingSessions}
-          style={styles.disconnectButton}
         />
       ) : null}
 
@@ -331,8 +275,5 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: colors.warning,
     lineHeight: 20,
-  },
-  disconnectButton: {
-    alignSelf: "flex-start",
   },
 })

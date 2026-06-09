@@ -3,6 +3,7 @@ import { StyleSheet, Text } from "react-native"
 import { Button } from "@/src/components/ui/Button"
 import { Card } from "@/src/components/ui/Card"
 import { Screen } from "@/src/components/ui/Screen"
+import { ScreenHeader } from "@/src/components/ui/ScreenHeader"
 import { useAuth } from "@/src/features/auth/use-auth"
 import { colors } from "@/src/theme/colors"
 import { spacing } from "@/src/theme/spacing"
@@ -17,10 +18,7 @@ export default function AccountScreen() {
   }
 
   return (
-    <Screen>
-      <Text style={styles.title}>Conta</Text>
-      <Text style={styles.subtitle}>Painel InstagramConnect</Text>
-
+    <Screen header={<ScreenHeader title="Conta" subtitle="Painel InstagramConnect" />}>
       <Card style={styles.card}>
         <Text style={styles.label}>E-mail</Text>
         <Text style={styles.email}>{userEmail}</Text>
@@ -32,17 +30,6 @@ export default function AccountScreen() {
 }
 
 const styles = StyleSheet.create({
-  title: {
-    fontSize: 28,
-    fontWeight: "700",
-    color: colors.text,
-    marginBottom: spacing.xs,
-  },
-  subtitle: {
-    fontSize: 14,
-    color: colors.textSecondary,
-    marginBottom: spacing.md,
-  },
   card: {
     marginBottom: spacing.lg,
     gap: spacing.xs,

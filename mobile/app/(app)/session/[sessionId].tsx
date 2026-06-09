@@ -1,11 +1,11 @@
 import { useLocalSearchParams, useRouter } from "expo-router"
-import { ArrowLeft } from "lucide-react-native"
 import { useEffect, useState } from "react"
-import { ActivityIndicator, Alert, Platform, Pressable, StyleSheet, Text, View } from "react-native"
+import { ActivityIndicator, Alert, Platform, StyleSheet, Text, View } from "react-native"
 import { SessionAutoFollowPanel } from "@/src/components/session/SessionAutoFollowPanel"
 import { SessionManagePanel } from "@/src/components/session/SessionManagePanel"
 import { Button } from "@/src/components/ui/Button"
 import { Screen } from "@/src/components/ui/Screen"
+import { ScreenHeader } from "@/src/components/ui/ScreenHeader"
 import { useInstaConnect } from "@/src/features/insta/use-insta-connect"
 import { colors } from "@/src/theme/colors"
 import { spacing } from "@/src/theme/spacing"
@@ -80,9 +80,13 @@ export default function SessionDetailScreen() {
     ])
   }
 
+  const header = (
+    <ScreenHeader onBack={() => router.back()} backLabel="Sessões" />
+  )
+
   if (!sessionId) {
     return (
-      <Screen>
+      <Screen header={<ScreenHeader title="Sessão" subtitle="Identificador inválido" />}>
         <Text style={styles.error}>Sessão inválida.</Text>
       </Screen>
     )
@@ -90,40 +94,33 @@ export default function SessionDetailScreen() {
 
   if (!session && !isManagingSessions && !isActivating) {
     return (
-      <Screen>
-        <Pressable onPress={() => router.back()} style={styles.backRow}>
-          <ArrowLeft size={20} color={colors.text} />
-          <Text style={styles.backText}>Voltar</Text>
-        </Pressable>
+      <Screen
+        header={
+          <ScreenHeader
+            title="Sessão"
+            subtitle="Não encontrada"
+            onBack={() => router.back()}
+            backLabel="Sessões"
+          />
+        }
+      >
         <Text style={styles.error}>Sessão não encontrada.</Text>
       </Screen>
     )
   }
 
   return (
-    <Screen>
-      <Pressable onPress={() => router.back()} style={styles.backRow}>
-        <ArrowLeft size={20} color={colors.text} />
-        <Text style={styles.backText}>Sessões</Text>
-      </Pressable>
-
+    <Screen header={header}>
       {isActivating || !session ? (
         <View style={styles.loading}>
           <ActivityIndicator size="large" color={colors.primary} />
         </View>
       ) : (
         <View style={styles.content}>
-          <Text style={styles.title}>
-            {session.instagramUsername ? `@${session.instagramUsername}` : "Nova sessão"}
-          </Text>
-
-          <SessionManagePanel
-            session={session}
-            onDisconnected={() => router.back()}
-          />
+          <SessionManagePanel session={session} />
 
           {canAutoFollow && session.instagramUsername ? (
-            <SessionAutoFollowPanel instagramUsername={session.instagramUsername} />
+            <SessionAutoFollowPanel />
           ) : isConnected ? (
             <View style={styles.hintBox}>
               <Text style={styles.hintTitle}>AutoFollow indisponível</Text>
@@ -170,17 +167,6 @@ export default function SessionDetailScreen() {
 }
 
 const styles = StyleSheet.create({
-  backRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing.xs,
-    marginBottom: spacing.md,
-  },
-  backText: {
-    fontSize: 15,
-    fontWeight: "600",
-    color: colors.text,
-  },
   loading: {
     flex: 1,
     alignItems: "center",
@@ -189,11 +175,6 @@ const styles = StyleSheet.create({
   },
   content: {
     gap: spacing.lg,
-  },
-  title: {
-    fontSize: 22,
-    fontWeight: "700",
-    color: colors.text,
   },
   hintBox: {
     padding: spacing.md,

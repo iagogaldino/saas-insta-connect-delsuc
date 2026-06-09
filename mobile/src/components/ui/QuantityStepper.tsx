@@ -61,6 +61,13 @@ export function QuantityStepper({
               </Pressable>
             )
           })}
+          <Pressable
+            onPress={() => onChange(min)}
+            disabled={value <= min}
+            style={[styles.shortcutChip, styles.clearChip, value <= min && styles.shortcutChipDisabled]}
+          >
+            <Text style={[styles.clearText, value <= min && styles.shortcutTextDisabled]}>Limpar</Text>
+          </Pressable>
         </View>
       ) : null}
     </View>
@@ -70,10 +77,13 @@ export function QuantityStepper({
 const styles = StyleSheet.create({
   wrap: {
     gap: spacing.sm,
+    alignItems: "center",
+    width: "100%",
   },
   row: {
     flexDirection: "row",
     alignItems: "center",
+    justifyContent: "center",
     gap: spacing.md,
   },
   button: {
@@ -96,6 +106,7 @@ const styles = StyleSheet.create({
   shortcuts: {
     flexDirection: "row",
     flexWrap: "wrap",
+    justifyContent: "center",
     gap: spacing.sm,
   },
   shortcutChip: {
@@ -115,6 +126,15 @@ const styles = StyleSheet.create({
     color: colors.primaryDark,
   },
   shortcutTextDisabled: {
+    color: colors.textSecondary,
+  },
+  clearChip: {
+    borderColor: colors.textSecondary,
+    backgroundColor: colors.surface,
+  },
+  clearText: {
+    fontSize: 13,
+    fontWeight: "600",
     color: colors.textSecondary,
   },
 })

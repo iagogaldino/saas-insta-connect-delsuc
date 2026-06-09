@@ -5,6 +5,7 @@ import { Avatar } from "@/src/components/ui/Avatar"
 import { Button } from "@/src/components/ui/Button"
 import { Card } from "@/src/components/ui/Card"
 import { Screen } from "@/src/components/ui/Screen"
+import { ScreenHeader } from "@/src/components/ui/ScreenHeader"
 import { StatusBadge } from "@/src/components/ui/StatusBadge"
 import { useInstaConnect } from "@/src/features/insta/use-insta-connect"
 import type { InstaSessionItem } from "@/src/features/insta/insta-connect-types"
@@ -42,21 +43,22 @@ export default function SessionsScreen() {
   }
 
   return (
-    <Screen>
-      <View style={styles.header}>
-        <View>
-          <Text style={styles.title}>Sessões</Text>
-          <Text style={styles.subtitle}>Toque em uma sessão para ver as funcionalidades</Text>
-        </View>
-        <Pressable
-          onPress={() => void handleCreateSession()}
-          disabled={isManagingSessions}
-          style={[styles.addButton, isManagingSessions && styles.addButtonDisabled]}
-        >
-          <Plus size={22} color={colors.primaryDark} />
-        </Pressable>
-      </View>
-
+    <Screen
+      header={
+        <ScreenHeader
+          title="Sessões"
+          right={
+            <Pressable
+              onPress={() => void handleCreateSession()}
+              disabled={isManagingSessions}
+              style={[styles.addButton, isManagingSessions && styles.addButtonDisabled]}
+            >
+              <Plus size={22} color={colors.primaryDark} />
+            </Pressable>
+          }
+        />
+      }
+    >
       {sessions.length === 0 ? (
         <Card style={styles.emptyCard}>
           <Text style={styles.emptyTitle}>Nenhuma sessão criada</Text>
@@ -110,24 +112,6 @@ export default function SessionsScreen() {
 }
 
 const styles = StyleSheet.create({
-  header: {
-    flexDirection: "row",
-    alignItems: "flex-start",
-    justifyContent: "space-between",
-    marginBottom: spacing.md,
-    gap: spacing.md,
-  },
-  title: {
-    fontSize: 28,
-    fontWeight: "700",
-    color: colors.text,
-    marginBottom: spacing.xs,
-  },
-  subtitle: {
-    fontSize: 14,
-    color: colors.textSecondary,
-    maxWidth: 280,
-  },
   addButton: {
     width: 44,
     height: 44,

@@ -1,11 +1,11 @@
 import axios from "axios"
 import { useLocalSearchParams, useRouter } from "expo-router"
-import { ArrowLeft } from "lucide-react-native"
 import { useCallback, useEffect, useState } from "react"
-import { ActivityIndicator, Pressable, StyleSheet, Text, View } from "react-native"
+import { ActivityIndicator, StyleSheet, Text, View } from "react-native"
 import { Avatar } from "@/src/components/ui/Avatar"
 import { Card } from "@/src/components/ui/Card"
 import { Screen } from "@/src/components/ui/Screen"
+import { ScreenHeader } from "@/src/components/ui/ScreenHeader"
 import { StatusBadge } from "@/src/components/ui/StatusBadge"
 import { useInstaRealtime } from "@/src/features/insta/insta-realtime-provider"
 import { useInstaConnect } from "@/src/features/insta/use-insta-connect"
@@ -77,28 +77,29 @@ export default function HistoryScreen() {
     }
   }, [socket, sessionId, loadHistory])
 
-  const title = session?.instagramUsername
+  const sessionLabel = session?.instagramUsername
     ? `@${session.instagramUsername}`
-    : "Histórico da sessão"
+    : "esta sessão"
 
   if (!sessionId) {
     return (
-      <Screen>
+      <Screen header={<ScreenHeader title="Histórico" subtitle="Sessão inválida" />}>
         <Text style={styles.error}>Sessão inválida.</Text>
       </Screen>
     )
   }
 
   return (
-    <Screen>
-      <Pressable onPress={() => router.back()} style={styles.backRow}>
-        <ArrowLeft size={20} color={colors.text} />
-        <Text style={styles.backText}>Voltar à sessão</Text>
-      </Pressable>
-
-      <Text style={styles.title}>Histórico</Text>
-      <Text style={styles.subtitle}>{title} · últimos 30 dias</Text>
-
+    <Screen
+      header={
+        <ScreenHeader
+          title="Histórico"
+          subtitle={`${sessionLabel} · últimos 30 dias`}
+          onBack={() => router.back()}
+          backLabel="Sessão"
+        />
+      }
+    >
       {loading ? (
         <View style={styles.loading}>
           <ActivityIndicator size="large" color={colors.primary} />
@@ -154,28 +155,6 @@ export default function HistoryScreen() {
 }
 
 const styles = StyleSheet.create({
-  backRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing.xs,
-    marginBottom: spacing.md,
-  },
-  backText: {
-    fontSize: 15,
-    fontWeight: "600",
-    color: colors.text,
-  },
-  title: {
-    fontSize: 28,
-    fontWeight: "700",
-    color: colors.text,
-    marginBottom: spacing.xs,
-  },
-  subtitle: {
-    fontSize: 14,
-    color: colors.textSecondary,
-    marginBottom: spacing.md,
-  },
   loading: {
     flex: 1,
     alignItems: "center",

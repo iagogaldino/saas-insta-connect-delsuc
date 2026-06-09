@@ -37,14 +37,10 @@ const FLOW_TABS: ReadonlyArray<{ id: FlowTab; label: string }> = [
 ]
 
 type SessionAutoFollowPanelProps = {
-  instagramUsername: string
   onReloginRequired?: () => void
 }
 
-export function SessionAutoFollowPanel({
-  instagramUsername,
-  onReloginRequired,
-}: SessionAutoFollowPanelProps) {
+export function SessionAutoFollowPanel({ onReloginRequired }: SessionAutoFollowPanelProps) {
   const router = useRouter()
   const { socket } = useInstaRealtime()
 
@@ -160,13 +156,14 @@ export function SessionAutoFollowPanel({
   return (
     <View style={styles.wrap}>
       <Text style={styles.title}>AutoFollow</Text>
-      <Text style={styles.subtitle}>Sessão: @{instagramUsername}</Text>
 
       <SegmentedControl options={FLOW_TABS} value={flowTab} onChange={setFlowTab} />
 
       <Card style={styles.card}>
-        <Text style={styles.sectionLabel}>Quantidade</Text>
-        <QuantityStepper value={quantity} onChange={setQuantity} />
+        <View style={styles.quantitySection}>
+          <Text style={styles.quantityLabel}>Quantidade</Text>
+          <QuantityStepper value={quantity} onChange={setQuantity} />
+        </View>
 
         <Text style={[styles.sectionLabel, styles.sectionGap]}>Filtro de privacidade</Text>
         <View style={styles.privacyRow}>
@@ -270,12 +267,20 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     color: colors.text,
   },
-  subtitle: {
-    fontSize: 14,
-    color: colors.textSecondary,
-  },
   card: {
     gap: spacing.sm,
+  },
+  quantitySection: {
+    alignItems: "center",
+    gap: spacing.sm,
+    width: "100%",
+  },
+  quantityLabel: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: colors.slate700,
+    textAlign: "center",
+    width: "100%",
   },
   sectionLabel: {
     fontSize: 14,

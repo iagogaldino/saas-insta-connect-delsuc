@@ -1,0 +1,18 @@
+---
+description: Insta Connect mobile design system and UI conventions
+globs: mobile/**/*.{tsx,ts}
+alwaysApply: false
+---
+
+# Mobile UI — Insta Connect
+
+- Theme tokens: `@/src/theme/colors`, `@/src/theme/spacing` (includes `radius`)
+- UI components: `@/src/components/ui/*` — prefer reuse over new primitives
+- Layout: `Screen` wrapper; `ScreenHeader` for in-app screens with navigation
+- Styling: React Native `StyleSheet` only; no Tailwind/NativeWind
+- Icons: `lucide-react-native` (size 20–22 for actions)
+- Copy: Brazilian Portuguese (pt-BR)
+- Do not use `constants/Colors.ts` or `components/Themed.tsx`
+- Touch targets: min 44–48px; use `Button` for primary actions
+- For design guidance, read `.cursor/skills/mobile-design/SKILL.md`
+- For new Expo APIs, check https://docs.expo.dev/versions/v56.0.0/ (see `mobile/AGENTS.md`)

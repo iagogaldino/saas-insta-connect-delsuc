@@ -6,7 +6,7 @@ import { Avatar } from "@/src/components/ui/Avatar"
 import { Button } from "@/src/components/ui/Button"
 import { Card } from "@/src/components/ui/Card"
 import { Input } from "@/src/components/ui/Input"
-import { LoadingOverlay } from "@/src/components/ui/LoadingOverlay"
+import { AutoFollowProcessingOverlay } from "@/src/components/session/AutoFollowProcessingOverlay"
 import { QuantityStepper } from "@/src/components/ui/QuantityStepper"
 import { SegmentedControl } from "@/src/components/ui/SegmentedControl"
 import { useInstaRealtime } from "@/src/features/insta/insta-realtime-provider"
@@ -66,6 +66,7 @@ export function SessionAutoFollowPanel({
   const [previewError, setPreviewError] = useState<string | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [previewLoading, setPreviewLoading] = useState(false)
+  const [overlayVisible, setOverlayVisible] = useState(false)
 
   async function handleAutoFollowSuccess(result: AutoFollowResponse | AutoFollowFollowersResponse) {
     await notifyAutoFollowComplete({
@@ -73,6 +74,7 @@ export function SessionAutoFollowPanel({
       requested: result.requested,
       targetUsername: "targetUsername" in result ? result.targetUsername : undefined,
     })
+    setOverlayVisible(false)
     navigateToResults(result)
   }
 
@@ -100,11 +102,13 @@ export function SessionAutoFollowPanel({
   async function runSuggested() {
     setError(null)
     setIsSubmitting(true)
+    setOverlayVisible(true)
     try {
       const { data } = await postAutoFollowSuggested(quantity, privacyFilter)
       const finalResult = await waitForAutoFollowJobResult<AutoFollowResponse>(socket, data.jobId)
       await handleAutoFollowSuccess(finalResult)
     } catch (e) {
+      setOverlayVisible(false)
       if (axios.isAxiosError(e)) {
         const body = e.response?.data as { error?: string } | undefined
         handleApiError(body?.error ?? e.message)
@@ -156,6 +160,7 @@ export function SessionAutoFollowPanel({
       setIsSubmitting(false)
       return
     }
+    setOverlayVisible(true)
     try {
       const { data } = await postAutoFollowFollowers(t, quantity, privacyFilter)
       const finalResult = await waitForAutoFollowJobResult<AutoFollowFollowersResponse>(socket, data.jobId)
@@ -163,6 +168,7 @@ export function SessionAutoFollowPanel({
       setPreview(null)
       await handleAutoFollowSuccess(finalResult)
     } catch (e) {
+      setOverlayVisible(false)
       if (axios.isAxiosError(e)) {
         const body = e.response?.data as { error?: string } | undefined
         handleApiError(body?.error ?? e.message)
@@ -294,7 +300,7 @@ export function SessionAutoFollowPanel({
         {error ? <Text style={styles.error}>{error}</Text> : null}
       </Card>
 
-      <LoadingOverlay visible={isSubmitting} message="Seguindo perfis..." />
+      <AutoFollowProcessingOverlay visible={overlayVisible} quantity={quantity} />
     </View>
   )
 }

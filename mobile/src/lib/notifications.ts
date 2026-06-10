@@ -1,5 +1,5 @@
 import Constants from "expo-constants"
-import { Alert, Platform } from "react-native"
+import { Platform } from "react-native"
 
 const AUTO_FOLLOW_CHANNEL_ID = "auto-follow"
 
@@ -27,14 +27,6 @@ function buildAutoFollowMessage(params: {
   return targetUsername
     ? `Seguiu ${followed} de ${requested} seguidores de @${targetUsername}.`
     : `Seguiu ${followed} de ${requested} perfis sugeridos.`
-}
-
-function showAutoFollowFallback(params: {
-  followed: number
-  requested: number
-  targetUsername?: string
-}) {
-  Alert.alert("AutoFollow concluído", buildAutoFollowMessage(params))
 }
 
 async function loadNotificationsModule(): Promise<NotificationsModule | null> {
@@ -72,7 +64,6 @@ export async function notifyAutoFollowComplete(params: {
   targetUsername?: string
 }): Promise<void> {
   if (!canUseNativeNotifications()) {
-    showAutoFollowFallback(params)
     return
   }
 
@@ -80,7 +71,6 @@ export async function notifyAutoFollowComplete(params: {
     await configureNotificationHandler()
     const Notifications = await loadNotificationsModule()
     if (!Notifications) {
-      showAutoFollowFallback(params)
       return
     }
 
@@ -91,7 +81,6 @@ export async function notifyAutoFollowComplete(params: {
         : await Notifications.requestPermissionsAsync()
 
     if (status !== "granted") {
-      showAutoFollowFallback(params)
       return
     }
 
@@ -115,6 +104,6 @@ export async function notifyAutoFollowComplete(params: {
       trigger: null,
     })
   } catch {
-    showAutoFollowFallback(params)
+    // Sem notificação nativa disponível — a tela de resultados já exibe o resumo.
   }
 }

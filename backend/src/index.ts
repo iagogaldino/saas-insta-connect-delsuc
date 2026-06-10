@@ -47,6 +47,8 @@ function getLanIpv4Addresses(): string[] {
 
 /** Pasta do pacote backend (`src/` ou `dist/` → um nível acima = raiz do backend). `process.cwd()` varia com monorepo/npm e quebrava o caminho `.session/`. */
 const BACKEND_ROOT = path.resolve(__dirname, "..");
+const PUBLIC_DIR = path.join(BACKEND_ROOT, "public");
+const PRIVACY_POLICY_PATH = path.join(PUBLIC_DIR, "privacidade.html");
 
 app.use(express.json());
 
@@ -823,6 +825,12 @@ async function ensureDmTapForSse(runtime: InstaRuntime) {
 app.get("/health", (_req, res) => {
   res.status(200).json({ status: "ok" });
 });
+
+app.get("/privacidade", (_req, res) => {
+  res.sendFile(PRIVACY_POLICY_PATH);
+});
+
+app.use(express.static(PUBLIC_DIR));
 
 app.use("/auth", authRoutes);
 app.use("/insta", requireAuth);

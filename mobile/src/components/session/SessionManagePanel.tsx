@@ -7,6 +7,7 @@ import { Input } from "@/src/components/ui/Input"
 import { StatusBadge } from "@/src/components/ui/StatusBadge"
 import { useInstaConnect } from "@/src/features/insta/use-insta-connect"
 import type { InstaSessionItem } from "@/src/features/insta/insta-connect-types"
+import { sessionStatusLabel, sessionStatusVariant } from "@/src/features/insta/session-status"
 import { colors } from "@/src/theme/colors"
 import { spacing } from "@/src/theme/spacing"
 
@@ -29,15 +30,18 @@ export function SessionManagePanel({ session }: SessionManagePanelProps) {
   const [username, setUsername] = useState("")
   const [password, setPassword] = useState("")
   const [securityCode, setSecurityCode] = useState("")
-  const [error, setError] = useState<string | null>(null)
-  const [notice, setNotice] = useState<string | null>(null)
-  const [isSubmitting, setIsSubmitting] = useState(false)
+  const [connectError, setConnectError] = useState<string | null>(null)
+  const [connectNotice, setConnectNotice] = useState<string | null>(null)
+  const [runtimeError, setRuntimeError] = useState<string | null>(null)
+  const [runtimeNotice, setRuntimeNotice] = useState<string | null>(null)
+  const [isSubmittingConnect, setIsSubmittingConnect] = useState(false)
+  const [isSubmittingRuntime, setIsSubmittingRuntime] = useState(false)
   const [showTwoFactor, setShowTwoFactor] = useState(false)
   const [pendingUsername, setPendingUsername] = useState("")
 
   const needsInstagramLogin = !isConnected || Boolean(session.requiresRelogin)
   const showConnectForm = needsInstagramLogin || showTwoFactor
-  const needsRuntimeStart = isConnected && !session.requiresRelogin && !session.isRuntimeOn
+  const showRuntimeSection = isConnected && !session.requiresRelogin
 
   useEffect(() => {
     if (session.instagramUsername) {
@@ -46,180 +50,206 @@ export function SessionManagePanel({ session }: SessionManagePanelProps) {
   }, [session.instagramUsername])
 
   async function handleConnect() {
-    setError(null)
-    setNotice(null)
-    setIsSubmitting(true)
+    setConnectError(null)
+    setConnectNotice(null)
+    setIsSubmittingConnect(true)
     const result = await connectInstagramToSession(session.id, username, password)
     if (result.success) {
       setPassword("")
       setSecurityCode("")
       setShowTwoFactor(false)
-      setNotice("Instagram conectado com sucesso!")
+      setConnectNotice("Instagram conectado com sucesso!")
       await refreshSessions()
     } else if ("challengeRequired" in result && result.challengeRequired) {
       setShowTwoFactor(true)
       setPendingUsername(result.username)
-      setError(result.message ?? "Digite o código de segurança recebido.")
+      setConnectError(result.message ?? "Digite o código de segurança recebido.")
     } else if ("error" in result) {
-      setError(result.error)
+      setConnectError(result.error)
     }
-    setIsSubmitting(false)
+    setIsSubmittingConnect(false)
   }
 
   async function handleSubmitCode() {
-    setError(null)
-    setNotice(null)
-    setIsSubmitting(true)
+    setConnectError(null)
+    setConnectNotice(null)
+    setIsSubmittingConnect(true)
     const result = await submitSecurityCodeForSession(session.id, pendingUsername, securityCode)
     if (result.success) {
       setPassword("")
       setSecurityCode("")
       setShowTwoFactor(false)
-      setNotice("Código confirmado. Instagram conectado!")
+      setConnectNotice("Código confirmado. Instagram conectado!")
       await refreshSessions()
     } else if ("challengeRequired" in result && result.challengeRequired) {
-      setError(result.message ?? "Código inválido ou expirado. Tente novamente.")
+      setConnectError(result.message ?? "Código inválido ou expirado. Tente novamente.")
     } else if ("error" in result) {
-      setError(result.error)
+      setConnectError(result.error)
     }
-    setIsSubmitting(false)
+    setIsSubmittingConnect(false)
   }
 
   async function handleStartRuntime() {
-    setError(null)
-    setNotice(null)
-    setIsSubmitting(true)
+    setRuntimeError(null)
+    setRuntimeNotice(null)
+    setIsSubmittingRuntime(true)
     const result = await startSessionRuntime(session.id)
     if (result.success) {
-      setNotice(result.runtimeStatusMessage ?? "Sessão iniciada.")
+      setRuntimeNotice(result.runtimeStatusMessage ?? "Sessão iniciada.")
     } else {
-      setError(result.error)
+      setRuntimeError(result.error)
     }
-    setIsSubmitting(false)
+    setIsSubmittingRuntime(false)
   }
 
   async function handleStopRuntime() {
-    setError(null)
-    setNotice(null)
-    setIsSubmitting(true)
+    setRuntimeError(null)
+    setRuntimeNotice(null)
+    setIsSubmittingRuntime(true)
     const result = await stopSessionRuntime(session.id)
     if (result.success) {
-      setNotice(result.runtimeStatusMessage ?? "Instância desligada com sucesso.")
+      setRuntimeNotice(result.runtimeStatusMessage ?? "Instância desligada com sucesso.")
     } else {
-      setError(result.error)
+      setRuntimeError(result.error)
     }
-    setIsSubmitting(false)
+    setIsSubmittingRuntime(false)
   }
 
   return (
-    <Card style={styles.card}>
-      <Text style={styles.sectionTitle}>Status Instagram</Text>
-      {isConnected ? (
-        <View style={styles.statusRow}>
-          <Avatar
-            uri={session.instagramProfilePicUrl}
-            username={session.instagramUsername ?? "?"}
-          />
-          <View style={styles.statusInfo}>
-            <Text style={styles.igUsername}>@{session.instagramUsername}</Text>
-            {session.instagramFullName ? (
-              <Text style={styles.igName}>{session.instagramFullName}</Text>
-            ) : null}
+    <View style={styles.wrap}>
+      <Card style={styles.card}>
+        <Text style={styles.sectionTitle}>Perfil Instagram</Text>
+        {isConnected ? (
+          <View style={styles.statusRow}>
+            <Avatar
+              uri={session.instagramProfilePicUrl}
+              username={session.instagramUsername ?? "?"}
+            />
+            <View style={styles.statusInfo}>
+              <Text style={styles.igUsername}>@{session.instagramUsername}</Text>
+              {session.instagramFullName ? (
+                <Text style={styles.igName}>{session.instagramFullName}</Text>
+              ) : null}
+              <StatusBadge
+                label={sessionStatusLabel(session)}
+                variant={sessionStatusVariant(session)}
+              />
+            </View>
           </View>
-        </View>
-      ) : (
-        <StatusBadge label="Não conectado" variant="warning" />
-      )}
+        ) : (
+          <View style={styles.disconnectedRow}>
+            <StatusBadge label="Não conectado" variant="warning" />
+            <Text style={styles.disconnectedHint}>
+              Conecte uma conta Instagram para usar o AutoFollow.
+            </Text>
+          </View>
+        )}
 
-      {session.requiresRelogin ? (
-        <Text style={styles.warning}>Sua sessão Instagram expirou. Faça login novamente.</Text>
-      ) : null}
+        {showConnectForm ? (
+          <View style={styles.connectBlock}>
+            {session.requiresRelogin && !showTwoFactor ? (
+              <Text style={styles.warning}>
+                Sua sessão Instagram expirou. Faça login novamente.
+              </Text>
+            ) : null}
 
-      {needsRuntimeStart ? (
-        <Button
-          title="Iniciar sessão"
-          variant="secondary"
-          onPress={handleStartRuntime}
-          loading={isSubmitting || isManagingSessions}
-        />
-      ) : null}
+            {showTwoFactor ? (
+              <>
+                <Text style={styles.connectTitle}>Código de segurança</Text>
+                <Text style={styles.hint}>
+                  Código enviado para @{pendingUsername}. Digite abaixo para concluir.
+                </Text>
+                <Input
+                  label="Código"
+                  value={securityCode}
+                  onChangeText={setSecurityCode}
+                  keyboardType="number-pad"
+                  editable={!isSubmittingConnect}
+                />
+                <Button
+                  title="Confirmar código"
+                  onPress={handleSubmitCode}
+                  loading={isSubmittingConnect}
+                />
+                <Button
+                  title="Voltar"
+                  variant="ghost"
+                  onPress={() => {
+                    setShowTwoFactor(false)
+                    setSecurityCode("")
+                    setConnectError(null)
+                  }}
+                />
+              </>
+            ) : (
+              <>
+                <Input
+                  label="Usuário Instagram"
+                  placeholder="seu_usuario"
+                  value={username}
+                  onChangeText={setUsername}
+                  autoCapitalize="none"
+                  editable={!isSubmittingConnect}
+                />
+                <Input
+                  label="Senha"
+                  value={password}
+                  onChangeText={setPassword}
+                  secureTextEntry
+                  editable={!isSubmittingConnect}
+                />
+                <Button
+                  title={session.requiresRelogin ? "Reconectar" : "Conectar"}
+                  onPress={handleConnect}
+                  loading={isSubmittingConnect || isManagingSessions}
+                />
+              </>
+            )}
 
-      {isConnected && session.isRuntimeOn ? (
-        <Button
-          title="Desligar sessão"
-          variant="secondary"
-          onPress={handleStopRuntime}
-          loading={isSubmitting || isManagingSessions}
-        />
-      ) : null}
+            {connectNotice ? <Text style={styles.notice}>{connectNotice}</Text> : null}
+            {connectError ? <Text style={styles.error}>{connectError}</Text> : null}
+          </View>
+        ) : null}
+      </Card>
 
-      {showConnectForm ? (
-        <View style={styles.connectBlock}>
-          <Text style={styles.connectTitle}>
-            {showTwoFactor
-              ? "Código de segurança"
-              : session.requiresRelogin
-                ? "Reconectar Instagram"
-                : "Conectar Instagram"}
+      {showRuntimeSection ? (
+        <Card style={styles.card}>
+          <Text style={styles.sectionTitle}>Instância</Text>
+          <StatusBadge
+            label={session.isRuntimeOn ? "Sessão ativa" : "Instância desligada"}
+            variant={session.isRuntimeOn ? "success" : "warning"}
+          />
+          <Text style={styles.hint}>
+            A instância precisa estar ativa para executar o AutoFollow nesta sessão.
           </Text>
 
-          {showTwoFactor ? (
-            <>
-              <Text style={styles.hint}>
-                Código enviado para @{pendingUsername}. Digite abaixo para concluir.
-              </Text>
-              <Input
-                label="Código"
-                value={securityCode}
-                onChangeText={setSecurityCode}
-                keyboardType="number-pad"
-                editable={!isSubmitting}
-              />
-              <Button title="Confirmar código" onPress={handleSubmitCode} loading={isSubmitting} />
-              <Button
-                title="Voltar"
-                variant="ghost"
-                onPress={() => {
-                  setShowTwoFactor(false)
-                  setSecurityCode("")
-                  setError(null)
-                }}
-              />
-            </>
+          {session.isRuntimeOn ? (
+            <Button
+              title="Desligar sessão"
+              variant="secondary"
+              onPress={handleStopRuntime}
+              loading={isSubmittingRuntime || isManagingSessions}
+            />
           ) : (
-            <>
-              <Input
-                label="Usuário Instagram"
-                placeholder="seu_usuario"
-                value={username}
-                onChangeText={setUsername}
-                autoCapitalize="none"
-                editable={!isSubmitting}
-              />
-              <Input
-                label="Senha"
-                value={password}
-                onChangeText={setPassword}
-                secureTextEntry
-                editable={!isSubmitting}
-              />
-              <Button
-                title={session.requiresRelogin ? "Reconectar" : "Conectar"}
-                onPress={handleConnect}
-                loading={isSubmitting || isManagingSessions}
-              />
-            </>
+            <Button
+              title="Iniciar sessão"
+              onPress={handleStartRuntime}
+              loading={isSubmittingRuntime || isManagingSessions}
+            />
           )}
-        </View>
-      ) : null}
 
-      {notice ? <Text style={styles.notice}>{notice}</Text> : null}
-      {error ? <Text style={styles.error}>{error}</Text> : null}
-    </Card>
+          {runtimeNotice ? <Text style={styles.notice}>{runtimeNotice}</Text> : null}
+          {runtimeError ? <Text style={styles.error}>{runtimeError}</Text> : null}
+        </Card>
+      ) : null}
+    </View>
   )
 }
 
 const styles = StyleSheet.create({
+  wrap: {
+    gap: spacing.md,
+  },
   card: {
     gap: spacing.md,
   },
@@ -245,6 +275,14 @@ const styles = StyleSheet.create({
   igName: {
     fontSize: 14,
     color: colors.textSecondary,
+  },
+  disconnectedRow: {
+    gap: spacing.sm,
+  },
+  disconnectedHint: {
+    fontSize: 14,
+    color: colors.textSecondary,
+    lineHeight: 20,
   },
   connectBlock: {
     gap: spacing.md,

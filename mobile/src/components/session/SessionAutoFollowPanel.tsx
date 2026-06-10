@@ -37,11 +37,22 @@ const FLOW_TABS: ReadonlyArray<{ id: FlowTab; label: string }> = [
   { id: "followers", label: "Seguidores de @" },
 ]
 
-type SessionAutoFollowPanelProps = {
-  onReloginRequired?: () => void
+type SessionAutoFollowUnavailable = {
+  message: string
+  actionLabel?: string
+  onAction?: () => void
+  actionLoading?: boolean
 }
 
-export function SessionAutoFollowPanel({ onReloginRequired }: SessionAutoFollowPanelProps) {
+type SessionAutoFollowPanelProps = {
+  onReloginRequired?: () => void
+  unavailable?: SessionAutoFollowUnavailable
+}
+
+export function SessionAutoFollowPanel({
+  onReloginRequired,
+  unavailable,
+}: SessionAutoFollowPanelProps) {
   const router = useRouter()
   const { socket } = useInstaRealtime()
 
@@ -163,9 +174,29 @@ export function SessionAutoFollowPanel({ onReloginRequired }: SessionAutoFollowP
     }
   }
 
+  if (unavailable) {
+    return (
+      <View style={styles.wrap}>
+        <Text style={styles.sectionTitle}>AutoFollow</Text>
+        <Card style={styles.unavailableCard}>
+          <Text style={styles.unavailableTitle}>AutoFollow indisponível</Text>
+          <Text style={styles.unavailableMessage}>{unavailable.message}</Text>
+          {unavailable.actionLabel && unavailable.onAction ? (
+            <Button
+              title={unavailable.actionLabel}
+              variant="secondary"
+              onPress={unavailable.onAction}
+              loading={unavailable.actionLoading}
+            />
+          ) : null}
+        </Card>
+      </View>
+    )
+  }
+
   return (
     <View style={styles.wrap}>
-      <Text style={styles.title}>AutoFollow</Text>
+      <Text style={styles.sectionTitle}>AutoFollow</Text>
 
       <SegmentedControl options={FLOW_TABS} value={flowTab} onChange={setFlowTab} />
 
@@ -272,10 +303,24 @@ const styles = StyleSheet.create({
   wrap: {
     gap: spacing.md,
   },
-  title: {
-    fontSize: 20,
-    fontWeight: "700",
+  sectionTitle: {
+    fontSize: 16,
+    fontWeight: "600",
     color: colors.text,
+  },
+  unavailableCard: {
+    gap: spacing.sm,
+    opacity: 0.85,
+  },
+  unavailableTitle: {
+    fontSize: 15,
+    fontWeight: "600",
+    color: colors.text,
+  },
+  unavailableMessage: {
+    fontSize: 14,
+    color: colors.textSecondary,
+    lineHeight: 20,
   },
   card: {
     gap: spacing.sm,

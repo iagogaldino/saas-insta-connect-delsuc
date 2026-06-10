@@ -8,21 +8,9 @@ import { Screen } from "@/src/components/ui/Screen"
 import { ScreenHeader } from "@/src/components/ui/ScreenHeader"
 import { StatusBadge } from "@/src/components/ui/StatusBadge"
 import { useInstaConnect } from "@/src/features/insta/use-insta-connect"
-import type { InstaSessionItem } from "@/src/features/insta/insta-connect-types"
+import { sessionStatusLabel, sessionStatusVariant } from "@/src/features/insta/session-status"
 import { colors } from "@/src/theme/colors"
 import { spacing } from "@/src/theme/spacing"
-
-function sessionStatusLabel(session: InstaSessionItem): string {
-  if (!session.instagramUsername) return "Não conectado"
-  if (session.requiresRelogin) return "Reconectar"
-  if (session.isRuntimeOn) return "Sessão ativa"
-  return "Conectado"
-}
-
-function sessionStatusVariant(session: InstaSessionItem): "success" | "warning" | "error" {
-  if (!session.instagramUsername || session.requiresRelogin) return "warning"
-  return "success"
-}
 
 export default function SessionsScreen() {
   const router = useRouter()

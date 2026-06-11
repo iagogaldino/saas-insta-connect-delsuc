@@ -1,0 +1,8 @@
+# Base ignores (EAS uses .easignore instead of .gitignore when present)
+node_modules/
+backend/.session/
+
+# Local native projects from expo run:android/ios must not be uploaded.
+# They contain machine-specific autolinking caches (e.g. Windows paths).
+/mobile/android
+/mobile/ios

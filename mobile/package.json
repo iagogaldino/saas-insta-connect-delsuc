@@ -39,7 +39,11 @@
     "android": "expo run:android",
     "ios": "expo run:ios",
     "web": "expo start --web",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "build:preview": "eas build -p android --profile preview",
+    "build:production": "eas build -p android --profile production",
+    "build:development": "eas build -p android --profile development",
+    "submit:production": "eas submit -p android --profile production"
   },
   "private": true
 }

@@ -17,13 +17,14 @@
     "start:backend": "npm run start -w backend",
     "lint:frontend": "npm run lint -w frontend",
     "dev:mobile": "npm run start -w mobile",
+    "build:mobile:preview": "npm run build:preview -w mobile",
+    "build:mobile:production": "npm run build:production -w mobile",
+    "build:mobile:development": "npm run build:development -w mobile",
+    "submit:mobile": "npm run submit:production -w mobile",
     "postinstall": "patch-package"
   },
   "devDependencies": {
     "concurrently": "^9.2.1",
     "patch-package": "^8.0.1"
-  },
-  "dependencies": {
-    "expo-router": "~56.2.9"
   }
 }

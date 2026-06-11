@@ -2,8 +2,9 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { Stack } from "expo-router"
 import * as SplashScreen from "expo-splash-screen"
 import { StatusBar } from "expo-status-bar"
-import { useEffect } from "react"
+import { useEffect, useState } from "react"
 import { SafeAreaProvider } from "react-native-safe-area-context"
+import { SplashPresentation } from "@/src/components/splash/SplashPresentation"
 import { AuthProvider } from "@/src/features/auth/auth-provider"
 import { useAuth } from "@/src/features/auth/use-auth"
 import { InstaRealtimeProvider } from "@/src/features/insta/insta-realtime-provider"
@@ -18,14 +19,25 @@ const queryClient = new QueryClient({
 
 function SplashGate({ children }: { children: React.ReactNode }) {
   const { isLoading } = useAuth()
+  const [presentationDone, setPresentationDone] = useState(false)
 
   useEffect(() => {
-    if (!isLoading) {
-      void SplashScreen.hideAsync()
-    }
-  }, [isLoading])
+    void SplashScreen.hideAsync()
+  }, [])
 
-  return children
+  const ready = !isLoading && presentationDone
+
+  return (
+    <>
+      {ready ? children : null}
+      {!presentationDone ? (
+        <SplashPresentation
+          canDismiss={!isLoading}
+          onComplete={() => setPresentationDone(true)}
+        />
+      ) : null}
+    </>
+  )
 }
 
 export default function RootLayout() {

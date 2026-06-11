@@ -1,0 +1,12 @@
+{
+  "expo": {
+    "extra": {
+      "eas": {
+        "projectId": "3a02bffa-484a-4f72-8c9e-34870ecf4763"
+      }
+    },
+    "android": {
+      "package": "com.iagogaldino.saasinstaconnect"
+    }
+  }
+}

@@ -117,7 +117,7 @@ function challengeAssistHtml(sessionId: string, basePath: string, accessToken: s
 
   <main id="challengeUi" class="challenge-ui">
     <div id="viewportWrap" class="viewport-wrap">
-      <img id="viewport" alt="Verificação reCAPTCHA" draggable="false" />
+      <img id="viewport" alt="Verificação" draggable="false" />
     </div>
   </main>
   <script src="/socket.io/socket.io.js"></script>

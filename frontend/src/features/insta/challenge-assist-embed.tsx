@@ -41,7 +41,7 @@ export function ChallengeAssistEmbed({
   return (
     <div className="fixed inset-0 z-50 flex flex-col bg-black">
       <div className="flex shrink-0 items-center justify-between border-b border-slate-800 bg-slate-950 px-4 py-3">
-        <span className="text-sm font-medium text-white">Verificação reCAPTCHA</span>
+        <span className="text-sm font-medium text-white">Verificação</span>
         <button
           type="button"
           onClick={onClose}
@@ -54,7 +54,7 @@ export function ChallengeAssistEmbed({
       </div>
       <iframe
         src={embedSrc}
-        title="Verificação reCAPTCHA"
+        title="Verificação"
         className="min-h-0 flex-1 w-full border-0 bg-black"
         allow="fullscreen"
       />

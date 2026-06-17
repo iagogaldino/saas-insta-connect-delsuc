@@ -1,4 +1,4 @@
-import { AtSign, Loader2, LogIn, PlusCircle, RefreshCw } from "lucide-react"
+import { AtSign, Loader2, LogIn, PlusCircle } from "lucide-react"
 import { useCallback, useEffect, useState, type FormEvent } from "react"
 import { useNavigate, useSearchParams } from "react-router-dom"
 import { readAuthToken } from "../lib/auth-session-storage"
@@ -101,7 +101,11 @@ export function ConnectInstagramPage() {
       if ("challengeRequired" in result && result.challengeRequired) {
         setPendingChallengeType(result.challengeType)
         setPendingChallengeAssistUrl(result.challengeAssistUrl ?? null)
-        setError(result.message ?? instaChallengeDefaultMessage(result.challengeType))
+        setError(
+          isManualInteractionChallenge(result.challengeType)
+            ? null
+            : (result.message ?? instaChallengeDefaultMessage(result.challengeType)),
+        )
         if (isManualInteractionChallenge(result.challengeType)) {
           setShowChallengeEmbed(true)
         }
@@ -140,7 +144,11 @@ export function ConnectInstagramPage() {
       setPendingChallengeType(result.challengeType)
       setPendingChallengeAssistUrl(result.challengeAssistUrl ?? null)
       setSecurityCode("")
-      setError(result.message ?? instaChallengeDefaultMessage(result.challengeType))
+      setError(
+        isManualInteractionChallenge(result.challengeType)
+          ? null
+          : (result.message ?? instaChallengeDefaultMessage(result.challengeType)),
+      )
       setPassword("")
       setIsSubmitting(false)
     } else {
@@ -197,7 +205,11 @@ export function ConnectInstagramPage() {
     if ("challengeRequired" in result && result.challengeRequired) {
       setPendingChallengeType(result.challengeType)
       setPendingChallengeAssistUrl(result.challengeAssistUrl ?? null)
-      setError(result.message ?? instaChallengeDefaultMessage(result.challengeType))
+      setError(
+        isManualInteractionChallenge(result.challengeType)
+          ? null
+          : (result.message ?? instaChallengeDefaultMessage(result.challengeType)),
+      )
       setSecurityCode("")
       setIsSubmitting(false)
       return
@@ -255,18 +267,6 @@ export function ConnectInstagramPage() {
       pendingTwoFactorUsername,
       15_000,
     )
-    applyChallengeWaitResult(result)
-    setIsSubmitting(false)
-  }
-
-  async function handleWaitForChallenge() {
-    setError(null)
-    if (!pendingSessionId || !pendingTwoFactorUsername) {
-      setError("Sessão pendente de verificação não encontrada. Inicie o login novamente.")
-      return
-    }
-    setIsSubmitting(true)
-    const result = await waitForChallengeResolvedForSession(pendingSessionId, pendingTwoFactorUsername, 120_000)
     applyChallengeWaitResult(result)
     setIsSubmitting(false)
   }
@@ -679,17 +679,15 @@ export function ConnectInstagramPage() {
           onSubmit={isManualInteractionChallenge(pendingChallengeType) ? (e) => e.preventDefault() : handleSubmitTwoFactorCode}
           className="space-y-4 rounded-xl border border-slate-200 bg-white p-6 shadow-sm"
         >
-          <div className="flex items-center gap-2 text-slate-800">
-            <AtSign className="h-5 w-5" aria-hidden />
-            <span className="text-sm font-medium">{instaChallengeFormTitle(pendingChallengeType)}</span>
-          </div>
+          {!isManualInteractionChallenge(pendingChallengeType) ? (
+            <div className="flex items-center gap-2 text-slate-800">
+              <AtSign className="h-5 w-5" aria-hidden />
+              <span className="text-sm font-medium">{instaChallengeFormTitle(pendingChallengeType)}</span>
+            </div>
+          ) : null}
 
           {isManualInteractionChallenge(pendingChallengeType) ? (
             <>
-              <p className="text-sm text-slate-600">
-                {error ??
-                  "Complete o reCAPTCHA na janela aberta. Se ela não aparecer, toque em Reabrir verificação."}
-              </p>
               <div className="flex flex-wrap items-center gap-2">
                 <button
                   type="button"
@@ -702,21 +700,6 @@ export function ConnectInstagramPage() {
                 <button
                   type="button"
                   onClick={() => {
-                    void handleWaitForChallenge()
-                  }}
-                  disabled={isSubmitting}
-                  className="inline-flex items-center justify-center gap-2 rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-70"
-                >
-                  {isSubmitting ? (
-                    <Loader2 className="h-4 w-4 shrink-0 animate-spin" aria-hidden />
-                  ) : (
-                    <RefreshCw className="h-4 w-4" aria-hidden />
-                  )}
-                  {isSubmitting ? "Verificando…" : "Verificar status"}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
                     void handleCancelTwoFactorFlow()
                   }}
                   disabled={isSubmitting}
@@ -725,10 +708,7 @@ export function ConnectInstagramPage() {
                   Cancelar
                 </button>
               </div>
-              <p className="text-xs text-slate-400">
-                A verificação abre dentro do app. Se o Instagram pedir código 2FA ou e-mail depois, o formulário
-                aparecerá aqui.
-              </p>
+              {error ? <p className="text-sm text-red-600">{error}</p> : null}
             </>
           ) : (
             <>

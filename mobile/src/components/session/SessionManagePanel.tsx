@@ -87,7 +87,11 @@ export function SessionManagePanel({ session }: SessionManagePanelProps) {
       if ("challengeRequired" in result && result.challengeRequired) {
         setPendingChallengeType(result.challengeType)
         setPendingChallengeAssistUrl(result.challengeAssistUrl ?? null)
-        setConnectError(result.message ?? instaChallengeDefaultMessage(result.challengeType))
+        setConnectError(
+          isManualInteractionChallenge(result.challengeType)
+            ? null
+            : (result.message ?? instaChallengeDefaultMessage(result.challengeType)),
+        )
         if (isManualInteractionChallenge(result.challengeType)) {
           setShowChallengeEmbed(true)
         }
@@ -118,7 +122,11 @@ export function SessionManagePanel({ session }: SessionManagePanelProps) {
       setPendingUsername(result.username)
       setPendingChallengeType(result.challengeType)
       setPendingChallengeAssistUrl(result.challengeAssistUrl ?? null)
-      setConnectError(result.message ?? instaChallengeDefaultMessage(result.challengeType))
+      setConnectError(
+        isManualInteractionChallenge(result.challengeType)
+          ? null
+          : (result.message ?? instaChallengeDefaultMessage(result.challengeType)),
+      )
     } else if ("error" in result) {
       setConnectError(result.error)
     }
@@ -140,7 +148,11 @@ export function SessionManagePanel({ session }: SessionManagePanelProps) {
     } else if ("challengeRequired" in result && result.challengeRequired) {
       setPendingChallengeType(result.challengeType)
       setPendingChallengeAssistUrl(result.challengeAssistUrl ?? null)
-      setConnectError(result.message ?? instaChallengeDefaultMessage(result.challengeType))
+      setConnectError(
+        isManualInteractionChallenge(result.challengeType)
+          ? null
+          : (result.message ?? instaChallengeDefaultMessage(result.challengeType)),
+      )
     } else if ("error" in result) {
       setConnectError(result.error)
     }
@@ -165,15 +177,6 @@ export function SessionManagePanel({ session }: SessionManagePanelProps) {
     setShowChallengeEmbed(false)
     setIsSubmittingConnect(true)
     const result = await waitForChallengeResolvedForSession(session.id, pendingUsername, 15_000)
-    await applyChallengeWaitResult(result)
-    setIsSubmittingConnect(false)
-  }
-
-  async function handleWaitForChallenge() {
-    setConnectError(null)
-    setConnectNotice(null)
-    setIsSubmittingConnect(true)
-    const result = await waitForChallengeResolvedForSession(session.id, pendingUsername, 120_000)
     await applyChallengeWaitResult(result)
     setIsSubmittingConnect(false)
   }
@@ -228,9 +231,11 @@ export function SessionManagePanel({ session }: SessionManagePanelProps) {
         ) : (
           <View style={styles.disconnectedRow}>
             <StatusBadge label="Não conectado" variant="warning" />
-            <Text style={styles.disconnectedHint}>
-              Conecte uma conta Instagram para usar o AutoFollow.
-            </Text>
+            {!showConnectForm ? (
+              <Text style={styles.disconnectedHint}>
+                Conecte uma conta Instagram para usar o AutoFollow.
+              </Text>
+            ) : null}
           </View>
         )}
 
@@ -245,22 +250,11 @@ export function SessionManagePanel({ session }: SessionManagePanelProps) {
             {showTwoFactor ? (
               isManualInteractionChallenge(pendingChallengeType) ? (
                 <View style={styles.challengeBlock}>
-                  <Text style={styles.connectTitle}>{instaChallengeFormTitle(pendingChallengeType)}</Text>
-                  <Text style={styles.hint}>
-                    {connectError ??
-                      "Complete o reCAPTCHA na tela aberta. Se não abrir, toque em Reabrir verificação."}
-                  </Text>
                   <Button
                     title="Reabrir verificação"
                     onPress={handleOpenChallengeAssist}
                     loading={isSubmittingConnect}
                     disabled={!pendingChallengeAssistUrl}
-                  />
-                  <Button
-                    title="Verificar status"
-                    variant="secondary"
-                    onPress={handleWaitForChallenge}
-                    loading={isSubmittingConnect}
                   />
                   <Button
                     title="Voltar"
@@ -273,6 +267,7 @@ export function SessionManagePanel({ session }: SessionManagePanelProps) {
                       setConnectError(null)
                     }}
                   />
+                  {connectError ? <Text style={styles.error}>{connectError}</Text> : null}
                 </View>
               ) : (
                 <View style={styles.challengeBlock}>

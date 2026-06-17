@@ -66,7 +66,7 @@ export function ChallengeAssistModal({
     <Modal visible animationType="slide" presentationStyle="fullScreen" onRequestClose={onClose}>
       <View style={[styles.container, { paddingTop: headerPaddingTop }]}>
         <View style={styles.header}>
-          <Text style={styles.headerTitle}>Verificação reCAPTCHA</Text>
+          <Text style={styles.headerTitle}>Verificação</Text>
           <Pressable
             onPress={onClose}
             accessibilityRole="button"
@@ -83,7 +83,7 @@ export function ChallengeAssistModal({
               {/* react-native-webview does not run on web; iframe matches the frontend embed. */}
               <iframe
                 src={embedSrc}
-                title="Verificação reCAPTCHA"
+                title="Verificação"
                 style={webIframeStyle}
                 allow="fullscreen"
               />

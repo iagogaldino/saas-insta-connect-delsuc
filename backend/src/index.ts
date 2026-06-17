@@ -702,7 +702,6 @@ function getOrCreateInstaRuntimeBySessionId(sessionId: string): InstaRuntime {
         sessionDir: `.session/${sessionId}/chrome-profile`,
         seenMessagesFile: `.session/${sessionId}/seen-message-ids.json`,
         headless,
-        challengeAssistZoom: 3,
       },
       (launch) => withInstaLaunchOptions(launch),
     ),

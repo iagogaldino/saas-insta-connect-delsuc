@@ -140,7 +140,12 @@ function challengeAssistHtml(sessionId: string, basePath: string, accessToken: s
       const wh = window.innerHeight;
       const fitWidth = ww / viewportWidth;
       const fitHeight = wh / viewportHeight;
-      return Math.min(fitWidth, fitHeight);
+      const fit = Math.min(fitWidth, fitHeight);
+      const isMobile = ww < 900 || ("ontouchstart" in window && ww < 1200);
+      if (isMobile) {
+        return Math.max(fit * 1.2, fitWidth * 0.98);
+      }
+      return fit;
     }
 
     function applyDisplayScale() {

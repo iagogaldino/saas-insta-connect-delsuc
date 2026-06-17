@@ -71,16 +71,29 @@ app.use((req, res, next) => {
 const headless = process.env.INSTA_HEADLESS === "1" || process.env.INSTA_HEADLESS === "true";
 const disableChromeSandbox = env.INSTA_DISABLE_CHROME_SANDBOX;
 
-function withInstaLaunchOptions(launch: { args?: string[]; slowMo?: number }) {
+function getChromeExecutablePath(): string | undefined {
+  const fromEnv = process.env.PUPPETEER_EXECUTABLE_PATH || process.env.CHROME_BIN;
+  const trimmed = fromEnv?.trim();
+  return trimmed || undefined;
+}
+
+function withInstaLaunchOptions(launch: { args?: string[]; slowMo?: number; executablePath?: string }) {
   const nextArgs = Array.isArray(launch.args) ? [...launch.args] : [];
   if (disableChromeSandbox) {
-    if (!nextArgs.includes("--no-sandbox")) nextArgs.push("--no-sandbox");
-    if (!nextArgs.includes("--disable-setuid-sandbox")) nextArgs.push("--disable-setuid-sandbox");
-    if (!nextArgs.includes("--disable-dev-shm-usage")) nextArgs.push("--disable-dev-shm-usage");
+    for (const flag of [
+      "--no-sandbox",
+      "--disable-setuid-sandbox",
+      "--disable-dev-shm-usage",
+      "--disable-gpu",
+    ]) {
+      if (!nextArgs.includes(flag)) nextArgs.push(flag);
+    }
   }
+  const executablePath = launch.executablePath ?? getChromeExecutablePath();
   return {
     ...launch,
     slowMo: 0,
+    ...(executablePath ? { executablePath } : {}),
     args: nextArgs,
   };
 }

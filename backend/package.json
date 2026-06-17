@@ -9,7 +9,7 @@
     "start": "node dist/index.js",
     "dev": "tsx watch src/index.ts",
     "install:chrome": "npx puppeteer browsers install chrome",
-    "postinstall": "npx puppeteer browsers install chrome"
+    "postinstall": "node -e \"if(process.env.PUPPETEER_SKIP_CHROMIUM_DOWNLOAD==='true'||process.env.PUPPETEER_EXECUTABLE_PATH||process.env.CHROME_BIN)process.exit(0)\" && npx puppeteer browsers install chrome"
   },
   "dependencies": {
     "bcryptjs": "^3.0.3",

@@ -1,6 +1,10 @@
 import type { Server as HttpServer } from "node:http";
 import { Server, type Socket } from "socket.io";
 import { verifyAccessToken } from "../modules/auth/auth.middleware";
+import {
+  registerChallengeAssistRealtime,
+  type ChallengeAssistRealtimeDeps,
+} from "./challenge-assist-realtime";
 
 export type AutoFollowJobLike = {
   id: string;
@@ -45,12 +49,19 @@ export type InstaRealtimeHandles = {
 
 export function initInstaRealtime(
   httpServer: HttpServer,
-  deps: { getJob: (jobId: string) => AutoFollowJobLike | undefined },
+  deps: {
+    getJob: (jobId: string) => AutoFollowJobLike | undefined;
+    challengeAssist?: ChallengeAssistRealtimeDeps;
+  },
 ): InstaRealtimeHandles {
   const io = new Server(httpServer, {
     path: "/socket.io/",
     cors: { origin: "*" },
   });
+
+  if (deps.challengeAssist) {
+    registerChallengeAssistRealtime(io, deps.challengeAssist);
+  }
 
   io.use(async (socket, next) => {
     const auth = socket.handshake.auth as Record<string, unknown> | undefined;

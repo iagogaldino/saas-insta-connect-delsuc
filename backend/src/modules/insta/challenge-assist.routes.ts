@@ -43,6 +43,9 @@ function challengeAssistHtml(sessionId: string, basePath: string, accessToken: s
     .challenge-ui {
       position: fixed;
       inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
       overflow: auto;
       -webkit-overflow-scrolling: touch;
       overscroll-behavior: contain;
@@ -50,8 +53,7 @@ function challengeAssistHtml(sessionId: string, basePath: string, accessToken: s
     }
     .challenge-ui.hidden { display: none !important; }
     .viewport-wrap {
-      transform-origin: top left;
-      will-change: transform;
+      flex-shrink: 0;
     }
     #viewport {
       display: block;
@@ -118,50 +120,42 @@ function challengeAssistHtml(sessionId: string, basePath: string, accessToken: s
       <img id="viewport" alt="Verificação reCAPTCHA" draggable="false" />
     </div>
   </main>
+  <script src="/socket.io/socket.io.js"></script>
   <script>
     const sessionId = ${safeSessionId};
-    const basePath = ${safeBasePath};
     const accessToken = ${safeAccessToken};
     const imgEl = document.getElementById("viewport");
     const viewportWrap = document.getElementById("viewportWrap");
     const challengeUi = document.getElementById("challengeUi");
-    let pollTimer = null;
     let viewportWidth = 1000;
     let viewportHeight = 600;
     let displayScale = 1;
     let loginSuccessShown = false;
     let shouldCenterScroll = true;
     let suppressClickUntil = 0;
-
-    function authHeaders(extra) {
-      return { authorization: "Bearer " + accessToken, ...(extra || {}) };
-    }
+    let socket = null;
 
     function computeDisplayScale() {
       const ww = window.innerWidth;
       const wh = window.innerHeight;
       const fitWidth = ww / viewportWidth;
       const fitHeight = wh / viewportHeight;
-      const cover = Math.max(fitWidth, fitHeight);
-      const isMobile = ww < 900 || ("ontouchstart" in window && ww < 1200);
-      if (isMobile) {
-        return Math.max(cover, fitWidth * 2.4, 1.75);
-      }
-      return Math.max(cover, fitWidth, 1);
+      return Math.min(fitWidth, fitHeight);
     }
 
     function applyDisplayScale() {
       if (!viewportWrap || !imgEl) return;
       displayScale = computeDisplayScale();
-      imgEl.style.width = viewportWidth + "px";
-      imgEl.style.height = viewportHeight + "px";
-      viewportWrap.style.width = Math.ceil(viewportWidth * displayScale) + "px";
-      viewportWrap.style.height = Math.ceil(viewportHeight * displayScale) + "px";
-      viewportWrap.style.transform = "scale(" + displayScale + ")";
+      const w = Math.round(viewportWidth * displayScale);
+      const h = Math.round(viewportHeight * displayScale);
+      imgEl.style.width = w + "px";
+      imgEl.style.height = h + "px";
+      viewportWrap.style.width = w + "px";
+      viewportWrap.style.height = h + "px";
       if (shouldCenterScroll && challengeUi) {
         requestAnimationFrame(function() {
-          challengeUi.scrollLeft = Math.max(0, (viewportWrap.offsetWidth - window.innerWidth) / 2);
-          challengeUi.scrollTop = Math.max(0, (viewportWrap.offsetHeight - window.innerHeight) / 2);
+          challengeUi.scrollLeft = Math.max(0, (w - window.innerWidth) / 2);
+          challengeUi.scrollTop = Math.max(0, (h - window.innerHeight) / 2);
         });
       }
     }
@@ -184,60 +178,37 @@ function challengeAssistHtml(sessionId: string, basePath: string, accessToken: s
       } catch {}
     }
 
+    function teardownSocket() {
+      if (!socket) return;
+      try {
+        socket.emit("challenge:unsubscribe", { sessionId: sessionId });
+      } catch {}
+      try {
+        socket.disconnect();
+      } catch {}
+      socket = null;
+    }
+
     function showLoginSuccess() {
       if (loginSuccessShown) return;
       loginSuccessShown = true;
       document.body.classList.add("login-success");
       document.title = "Insta Connect — Login concluído";
       if (challengeUi) challengeUi.classList.add("hidden");
-      if (pollTimer) {
-        clearInterval(pollTimer);
-        pollTimer = null;
-      }
+      teardownSocket();
       notifyEmbedHost();
     }
 
-    async function fetchStatus() {
-      const res = await fetch(basePath + "/status", { cache: "no-store", headers: authHeaders() });
-      return res.json();
-    }
-
-    async function refreshScreenshot() {
-      const res = await fetch(basePath + "/screenshot.json?t=" + Date.now(), { cache: "no-store", headers: authHeaders() });
-      if (!res.ok) throw new Error("Falha ao capturar tela (" + res.status + ")");
-      const data = await res.json();
-      if (!data.ok) throw new Error(data.error || "Falha ao capturar tela");
+    function applyScreenshot(data) {
+      if (!data || data.sessionId !== sessionId || !data.ok || !data.base64) return;
       viewportWidth = data.width || viewportWidth;
       viewportHeight = data.height || viewportHeight;
       imgEl.src = "data:image/png;base64," + data.base64;
       applyDisplayScale();
-      return data;
     }
 
-    async function relayClick(x, y) {
-      const res = await fetch(basePath + "/click", {
-        method: "POST",
-        headers: authHeaders({ "content-type": "application/json" }),
-        body: JSON.stringify({ x, y }),
-      });
-      return res.json();
-    }
-
-    async function tick() {
-      try {
-        const status = await fetchStatus();
-        if (!status.ok) return;
-        if (status.loggedIn) {
-          showLoginSuccess();
-          return;
-        }
-        await refreshScreenshot();
-      } catch {
-        // Mantém a última captura visível; próximo poll tenta de novo.
-      }
-    }
-
-    async function relayClickAt(clientX, clientY) {
+    function relayClickAt(clientX, clientY) {
+      if (!socket || !socket.connected) return;
       const rect = imgEl.getBoundingClientRect();
       if (!rect.width || !rect.height) return;
       const scaleX = viewportWidth / rect.width;
@@ -245,39 +216,61 @@ function challengeAssistHtml(sessionId: string, basePath: string, accessToken: s
       const x = Math.round((clientX - rect.left) * scaleX);
       const y = Math.round((clientY - rect.top) * scaleY);
       shouldCenterScroll = false;
-      const result = await relayClick(x, y);
-      if (!result.ok) throw new Error(result.error || "Falha ao enviar clique");
-      await tick();
+      socket.emit("challenge:click", { sessionId: sessionId, x: x, y: y });
     }
 
-    imgEl.addEventListener("click", async (event) => {
+    imgEl.addEventListener("click", function(event) {
       if (Date.now() < suppressClickUntil) return;
       event.preventDefault();
-      try {
-        await relayClickAt(event.clientX, event.clientY);
-      } catch {
-        // Ignora erro visual; usuário pode clicar novamente.
-      }
+      relayClickAt(event.clientX, event.clientY);
     });
 
-    imgEl.addEventListener("touchend", async (event) => {
+    imgEl.addEventListener("touchend", function(event) {
       if (event.changedTouches.length !== 1) return;
       event.preventDefault();
       suppressClickUntil = Date.now() + 500;
       const touch = event.changedTouches[0];
-      try {
-        await relayClickAt(touch.clientX, touch.clientY);
-      } catch {
-        // Ignora erro visual; usuário pode tocar novamente.
-      }
+      relayClickAt(touch.clientX, touch.clientY);
     }, { passive: false });
 
     imgEl.addEventListener("load", function() {
       applyDisplayScale();
     });
 
-    void tick();
-    pollTimer = setInterval(() => { void tick(); }, 2500);
+    socket = io({
+      path: "/socket.io/",
+      auth: { token: accessToken },
+      transports: ["websocket", "polling"],
+      reconnection: true,
+      reconnectionAttempts: 8,
+      reconnectionDelay: 800,
+    });
+
+    socket.on("connect", function() {
+      socket.emit("challenge:subscribe", { sessionId: sessionId });
+    });
+
+    socket.on("challenge:subscribed", function(data) {
+      if (data && data.sessionId === sessionId && data.ok) return;
+    });
+
+    socket.on("challenge:screenshot", applyScreenshot);
+
+    socket.on("challenge:status", function(data) {
+      if (!data || data.sessionId !== sessionId) return;
+      if (data.loggedIn) showLoginSuccess();
+    });
+
+    socket.on("challenge:login-success", function(data) {
+      if (!data || data.sessionId !== sessionId) return;
+      showLoginSuccess();
+    });
+
+    socket.on("challenge:error", function(data) {
+      if (!data || (data.sessionId && data.sessionId !== sessionId)) return;
+    });
+
+    window.addEventListener("beforeunload", teardownSocket);
   </script>
 </body>
 </html>`;

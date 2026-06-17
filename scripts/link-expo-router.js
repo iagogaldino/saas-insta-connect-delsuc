@@ -11,8 +11,8 @@ if (!fs.existsSync(mobileRouter)) {
 }
 
 if (fs.existsSync(rootRouter)) {
-  const rootAssets = path.join(rootRouter, "assets", "error.png");
-  if (fs.existsSync(rootAssets)) {
+  const rootAssetsDir = path.join(rootRouter, "assets");
+  if (fs.existsSync(rootAssetsDir)) {
     process.exit(0);
   }
   fs.rmSync(rootRouter, { recursive: true, force: true });

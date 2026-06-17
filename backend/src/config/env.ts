@@ -12,6 +12,8 @@ const envSchema = z.object({
   BCRYPT_SALT_ROUNDS: z.coerce.number().int().min(8).max(15).default(10),
   /** IANA (ex.: America/Sao_Paulo). Agendamentos antigos sem fuso gravado usam este valor. */
   FOLLOW_SCHEDULE_DEFAULT_TIMEZONE: z.string().min(2).default("America/Sao_Paulo"),
+  /** URL pública do backend (ex.: https://api.seudominio.com). Usada em links de verificação remota reCAPTCHA. */
+  PUBLIC_BASE_URL: z.string().optional(),
 });
 
 export const env = envSchema.parse(process.env);

@@ -11,14 +11,24 @@
     },
     "preview": {
       "distribution": "internal",
-      "prebuildCommand": "npx expo prebuild --clean"
+      "prebuildCommand": "npx expo prebuild --clean",
+      "android": {
+        "buildType": "apk"
+      }
     },
     "production": {
       "autoIncrement": true,
-      "prebuildCommand": "npx expo prebuild --clean"
+      "prebuildCommand": "npx expo prebuild --clean",
+      "android": {
+        "buildType": "app-bundle"
+      }
     }
   },
   "submit": {
-    "production": {}
+    "production": {
+      "android": {
+        "track": "internal"
+      }
+    }
   }
 }

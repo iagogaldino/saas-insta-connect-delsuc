@@ -15,6 +15,11 @@ export type InstaConnectValue = {
   connectInstagram: (username: string, password: string) => Promise<InstaLinkResult>
   connectInstagramToSession: (sessionId: string, username: string, password: string) => Promise<InstaLinkResult>
   submitSecurityCodeForSession: (sessionId: string, username: string, code: string) => Promise<InstaLinkResult>
+  waitForChallengeResolvedForSession: (
+    sessionId: string,
+    username: string,
+    timeoutMs?: number,
+  ) => Promise<InstaLinkResult>
   disconnectInstagram: () => void
 }
 

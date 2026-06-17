@@ -13,6 +13,11 @@ export type InstaConnectValue = {
   removeSession: (sessionId: string) => Promise<InstaSessionsResult>
   connectInstagramToSession: (sessionId: string, username: string, password: string) => Promise<InstaLinkResult>
   submitSecurityCodeForSession: (sessionId: string, username: string, code: string) => Promise<InstaLinkResult>
+  waitForChallengeResolvedForSession: (
+    sessionId: string,
+    username: string,
+    timeoutMs?: number,
+  ) => Promise<InstaLinkResult>
 }
 
 export const InstaConnectContext = createContext<InstaConnectValue | null>(null)

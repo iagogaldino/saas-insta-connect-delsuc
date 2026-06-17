@@ -1,4 +1,5 @@
 import { api } from "./api"
+import type { InstaLoginChallengeType } from "../features/insta/insta-connect-types"
 
 /** Resposta de `POST /insta/open-login` com credenciais (chama `client.login` no backend). */
 export type InstaLoginResponse = {
@@ -7,7 +8,9 @@ export type InstaLoginResponse = {
   success: boolean
   url: string
   challengeRequired?: boolean
-  challengeType?: "security_code" | "two_factor" | "unknown"
+  challengeType?: InstaLoginChallengeType
+  manualInteractionRequired?: boolean
+  challengeAssistUrl?: string
   message?: string
 }
 
@@ -33,6 +36,17 @@ export async function postInstaSubmitSecurityCodeForSession(
   return api.post<InstaLoginResponse>(
     `/insta/sessions/${encodeURIComponent(sessionId)}/submit-security-code`,
     { code, username },
+  )
+}
+
+export async function postWaitForChallengeResolved(
+  sessionId: string,
+  username: string,
+  timeoutMs = 120_000,
+) {
+  return api.post<InstaLoginResponse>(
+    `/insta/sessions/${encodeURIComponent(sessionId)}/wait-for-challenge-resolved`,
+    { username, timeoutMs },
   )
 }
 

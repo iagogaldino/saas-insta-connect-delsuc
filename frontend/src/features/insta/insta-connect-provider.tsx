@@ -11,16 +11,41 @@ import {
   postStartInstaSessionRuntime,
   postStopInstaSessionRuntime,
   postInstaSubmitSecurityCodeForSession,
+  postWaitForChallengeResolved,
 } from "../../lib/insta"
+import type { InstaLoginResponse } from "../../lib/insta"
 import { InstaConnectContext, type InstaConnectValue } from "./insta-connect-context"
-import type { InstaLinkResult, InstaSessionsResult } from "./insta-connect-types"
+import type { InstaLinkResult, InstaLoginChallengeType, InstaSessionsResult } from "./insta-connect-types"
 
 type ChallengeLikeErrorBody = {
   error?: string
   challengeRequired?: boolean
-  challengeType?: "security_code" | "two_factor" | "unknown"
+  challengeType?: InstaLoginChallengeType
+  manualInteractionRequired?: boolean
+  challengeAssistUrl?: string
   message?: string
   url?: string
+}
+
+function mapChallengeLoginData(
+  data: InstaLoginResponse,
+  sessionId: string,
+  username: string,
+): InstaLinkResult | null {
+  if (data.challengeRequired) {
+    return {
+      success: false,
+      challengeRequired: true,
+      challengeType: data.challengeType,
+      manualInteractionRequired: data.manualInteractionRequired,
+      challengeAssistUrl: data.challengeAssistUrl,
+      message: data.message,
+      url: data.url,
+      sessionId,
+      username,
+    }
+  }
+  return null
 }
 
 export function InstaConnectProvider({ children }: { children: ReactNode }) {
@@ -170,17 +195,8 @@ export function InstaConnectProvider({ children }: { children: ReactNode }) {
       }
       try {
         const { data } = await postInstaLogin(u, password)
-        if (data.ok && data.challengeRequired) {
-          return {
-            success: false,
-            challengeRequired: true,
-            challengeType: data.challengeType,
-            message: data.message,
-            url: data.url,
-            sessionId: "",
-            username: u,
-          }
-        }
+        const challenge = mapChallengeLoginData(data, "", u)
+        if (challenge) return challenge
         if (data.ok && data.success) {
           writeInstaLinked(true)
           setIsLinked(true)
@@ -203,6 +219,8 @@ export function InstaConnectProvider({ children }: { children: ReactNode }) {
               success: false,
               challengeRequired: true,
               challengeType: body.challengeType,
+              manualInteractionRequired: body.manualInteractionRequired,
+              challengeAssistUrl: body.challengeAssistUrl,
               message: body.message,
               url: body.url,
               sessionId: "",
@@ -225,17 +243,8 @@ export function InstaConnectProvider({ children }: { children: ReactNode }) {
       }
       try {
         const { data } = await postInstaLoginForSession(sessionId, u, password)
-        if (data.ok && data.challengeRequired) {
-          return {
-            success: false,
-            challengeRequired: true,
-            challengeType: data.challengeType,
-            message: data.message,
-            url: data.url,
-            sessionId,
-            username: u,
-          }
-        }
+        const challenge = mapChallengeLoginData(data, sessionId, u)
+        if (challenge) return challenge
         if (data.ok && data.success) {
           writeInstaLinked(true)
           setIsLinked(true)
@@ -259,6 +268,8 @@ export function InstaConnectProvider({ children }: { children: ReactNode }) {
               success: false,
               challengeRequired: true,
               challengeType: body.challengeType,
+              manualInteractionRequired: body.manualInteractionRequired,
+              challengeAssistUrl: body.challengeAssistUrl,
               message: body.message,
               url: body.url,
               sessionId,
@@ -286,17 +297,8 @@ export function InstaConnectProvider({ children }: { children: ReactNode }) {
           normalizedCode,
           normalizedUsername,
         )
-        if (data.ok && data.challengeRequired) {
-          return {
-            success: false,
-            challengeRequired: true,
-            challengeType: data.challengeType,
-            message: data.message,
-            url: data.url,
-            sessionId,
-            username: normalizedUsername,
-          }
-        }
+        const challenge = mapChallengeLoginData(data, sessionId, normalizedUsername)
+        if (challenge) return challenge
         if (data.ok && data.success) {
           writeInstaLinked(true)
           setIsLinked(true)
@@ -310,6 +312,34 @@ export function InstaConnectProvider({ children }: { children: ReactNode }) {
           }
         }
         return { success: false, error: "Resposta inesperada do servidor." }
+      } catch (e) {
+        if (axios.isAxiosError(e)) {
+          const body = e.response?.data as { error?: string } | undefined
+          return { success: false, error: body?.error ?? e.message }
+        }
+        return { success: false, error: e instanceof Error ? e.message : "Erro desconhecido." }
+      }
+    },
+    [refreshSessions],
+  )
+
+  const waitForChallengeResolvedForSession = useCallback(
+    async (sessionId: string, username: string, timeoutMs = 120_000): Promise<InstaLinkResult> => {
+      const normalizedUsername = username.trim().toLowerCase()
+      if (!sessionId || !normalizedUsername) {
+        return { success: false, error: "Preencha sessão e usuário para verificar o desafio." }
+      }
+      try {
+        const { data } = await postWaitForChallengeResolved(sessionId, normalizedUsername, timeoutMs)
+        const challenge = mapChallengeLoginData(data, sessionId, normalizedUsername)
+        if (challenge) return challenge
+        if (data.ok && data.success) {
+          writeInstaLinked(true)
+          setIsLinked(true)
+          await refreshSessions()
+          return { success: true, url: data.url }
+        }
+        return { success: false, error: data.message ?? "Instagram ainda não concluiu a verificação visual." }
       } catch (e) {
         if (axios.isAxiosError(e)) {
           const body = e.response?.data as { error?: string } | undefined
@@ -347,6 +377,7 @@ export function InstaConnectProvider({ children }: { children: ReactNode }) {
       connectInstagram,
       connectInstagramToSession,
       submitSecurityCodeForSession,
+      waitForChallengeResolvedForSession,
       disconnectInstagram,
     }),
     [
@@ -363,6 +394,7 @@ export function InstaConnectProvider({ children }: { children: ReactNode }) {
       connectInstagram,
       connectInstagramToSession,
       submitSecurityCodeForSession,
+      waitForChallengeResolvedForSession,
       disconnectInstagram,
     ],
   )

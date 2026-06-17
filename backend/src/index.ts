@@ -7,6 +7,11 @@ import path from "node:path";
 import express from "express";
 import type { Request, Response } from "express";
 import { createInstaConnect, type DmTapEvent, type InstaConnect } from "insta-connect-delsuc";
+import {
+  createChallengeAssistApiRouter,
+  createChallengeAssistRouter,
+} from "./modules/insta/challenge-assist.routes";
+import { enrichLoginChallengeResponse } from "./modules/insta/login-challenge";
 import { connectDatabase } from "./config/database";
 import { env } from "./config/env";
 import { UserModel } from "./modules/auth/user.model";
@@ -148,25 +153,6 @@ function logInstaAuth(event: string, meta?: Record<string, unknown>): void {
 function logFollowSchedule(event: string, meta?: Record<string, unknown>): void {
   const payload = meta ? ` ${JSON.stringify(meta)}` : "";
   console.log(`[${new Date().toISOString()}] [follow-schedule] ${event}${payload}`);
-}
-
-function resolveChallengeFromLoginResult(result: { url?: string; challengeRequired?: boolean; challengeType?: unknown }) {
-  const explicitChallenge = result.challengeRequired === true;
-  const url = String(result.url || "");
-  const urlSuggestsChallenge =
-    url.includes("/accounts/login/two_factor") ||
-    url.includes("/accounts/two_factor") ||
-    url.includes("/challenge/");
-  const challengeRequired = explicitChallenge || urlSuggestsChallenge;
-  const challengeType =
-    typeof result.challengeType === "string" && result.challengeType
-      ? result.challengeType
-      : url.includes("two_factor")
-        ? "two_factor"
-        : url.includes("/challenge/")
-          ? "security_code"
-          : "unknown";
-  return { challengeRequired, challengeType };
 }
 
 function uniqueSessionIds(items: Array<string | null | undefined>): string[] {
@@ -833,7 +819,75 @@ app.get("/privacidade", (_req, res) => {
 app.use(express.static(PUBLIC_DIR));
 
 app.use("/auth", authRoutes);
+
+async function assertUserOwnsSession(userId: string, sessionId: string): Promise<boolean> {
+  const state = await getOrCreateUserSessionState(userId);
+  return state.sessionIds.includes(sessionId);
+}
+
+async function finalizeInstagramLoginForSession(
+  userId: string,
+  sessionId: string,
+  username: string,
+): Promise<void> {
+  const profile = await fetchInstagramPublicProfile(username.toLowerCase());
+  await InstaSessionProfileModel.updateOne(
+    { userId, sessionId },
+    {
+      $set: {
+        instagramUsername: username.toLowerCase(),
+        instagramFullName: profile.fullName,
+        instagramProfilePicUrl: profile.profilePicUrl,
+        lastLoginAt: new Date(),
+        requiresRelogin: false,
+      },
+    },
+    { upsert: true },
+  );
+  await setActiveUserSession(userId, sessionId);
+}
+
+const challengeAssistDeps = {
+  getRuntimeClient: (sessionId: string) => instaRuntimes.get(sessionId)?.client ?? null,
+  assertSessionOwner: assertUserOwnsSession,
+};
+
+app.use("/insta/sessions/:sessionId/challenge", createChallengeAssistRouter(challengeAssistDeps));
+
 app.use("/insta", requireAuth);
+
+app.use(
+  "/insta/sessions/:sessionId",
+  createChallengeAssistApiRouter({
+    ...challengeAssistDeps,
+    onChallengeResolved: async (userId, sessionId, username, result, req) => {
+      const payload = enrichLoginChallengeResponse(
+        challengeAssistDeps.getRuntimeClient(sessionId)!,
+        sessionId,
+        result,
+        req,
+      );
+      logInstaAuth("wait-for-challenge-resolved:result", {
+        userId,
+        sessionId,
+        username,
+        success: payload.success,
+        challengeRequired: payload.challengeRequired,
+        challengeType: payload.challengeType,
+        manualInteractionRequired: payload.manualInteractionRequired,
+        url: payload.url,
+        message: payload.message,
+      });
+      if (payload.success && username) {
+        await finalizeInstagramLoginForSession(userId, sessionId, username);
+        logInstaAuth("wait-for-challenge-resolved:completed", { userId, sessionId, username });
+      } else if (payload.challengeRequired) {
+        await markSessionRequiresRelogin(userId, sessionId, "challenge_required_after_visual");
+      }
+      return { ...(payload as object) };
+    },
+  }),
+);
 
 app.get("/insta/sessions", async (req, res) => {
   try {
@@ -1121,53 +1175,36 @@ app.post("/insta/sessions/:sessionId/connect-login", async (req, res) => {
 
     const runtime = getOrCreateInstaRuntimeBySessionId(sessionId);
     const result = await runtime.client.login(username, password);
-    const challengeInfo = resolveChallengeFromLoginResult(result as any);
-    const challengeRequired = challengeInfo.challengeRequired;
+    const payload = enrichLoginChallengeResponse(runtime.client, sessionId, result, req);
     logInstaAuth("connect-login:result", {
       userId,
       sessionId,
       username,
-      success: result.success,
-      challengeRequired,
-      challengeType: challengeInfo.challengeType,
-      url: result.url,
-      message: (result as any)?.message,
+      success: payload.success,
+      challengeRequired: payload.challengeRequired,
+      challengeType: payload.challengeType,
+      manualInteractionRequired: payload.manualInteractionRequired,
+      url: payload.url,
+      message: payload.message,
     });
-    if (challengeRequired) {
+    if (payload.challengeRequired) {
       await markSessionRequiresRelogin(userId, sessionId, "challenge_required_on_login");
       res.json({
         ok: true,
         headless,
-        ...result,
-        challengeRequired: true,
-        challengeType: challengeInfo.challengeType,
+        ...payload,
         activeSessionId: sessionId,
       });
       return;
     }
-    if (!result.success) {
-      res.status(409).json({ ok: false, error: "Instagram não confirmou o login para esta sessão.", ...result });
+    if (!payload.success) {
+      res.status(409).json({ ok: false, error: "Instagram não confirmou o login para esta sessão.", ...payload });
       return;
     }
 
-    const profile = await fetchInstagramPublicProfile(username.toLowerCase());
-    await InstaSessionProfileModel.updateOne(
-      { userId, sessionId },
-      {
-        $set: {
-          instagramUsername: username.toLowerCase(),
-          instagramFullName: profile.fullName,
-          instagramProfilePicUrl: profile.profilePicUrl,
-          lastLoginAt: new Date(),
-          requiresRelogin: false,
-        },
-      },
-      { upsert: true },
-    );
-
-    await setActiveUserSession(userId, sessionId);
+    await finalizeInstagramLoginForSession(userId, sessionId, username);
     logInstaAuth("connect-login:completed", { userId, sessionId, username });
-    res.json({ ok: true, headless, ...result, activeSessionId: sessionId });
+    res.json({ ok: true, headless, ...payload, activeSessionId: sessionId });
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
     logInstaAuth("connect-login:error", { error: message });
@@ -1213,48 +1250,26 @@ app.post("/insta/sessions/:sessionId/submit-security-code", async (req, res) => 
     }
 
     const runtime = getOrCreateInstaRuntimeBySessionId(sessionId);
-    const submitSecurityCode = (runtime.client as any)?.submitSecurityCode;
-    if (typeof submitSecurityCode !== "function") {
-      logInstaAuth("submit-security-code:not-supported", { userId, sessionId, username });
-      res.status(409).json({
-        ok: false,
-        error:
-          "A versão atual da biblioteca insta-connect-delsuc não suporta submitSecurityCode. Atualize a lib para uma versão com suporte a 2FA.",
-      });
-      return;
-    }
-    const result = await submitSecurityCode.call(runtime.client, code);
+    const result = await runtime.client.submitSecurityCode(code);
+    const payload = enrichLoginChallengeResponse(runtime.client, sessionId, result, req);
     logInstaAuth("submit-security-code:result", {
       userId,
       sessionId,
       username,
-      success: Boolean(result?.success),
-      challengeRequired: Boolean(result?.challengeRequired),
-      challengeType: result?.challengeType,
-      url: result?.url,
-      message: result?.message,
+      success: Boolean(payload.success),
+      challengeRequired: Boolean(payload.challengeRequired),
+      challengeType: payload.challengeType,
+      manualInteractionRequired: payload.manualInteractionRequired,
+      url: payload.url,
+      message: payload.message,
     });
 
-    if (result.success) {
-      const profile = await fetchInstagramPublicProfile(username);
-      await InstaSessionProfileModel.updateOne(
-        { userId, sessionId },
-        {
-          $set: {
-            instagramUsername: username,
-            instagramFullName: profile.fullName,
-            instagramProfilePicUrl: profile.profilePicUrl,
-            lastLoginAt: new Date(),
-            requiresRelogin: false,
-          },
-        },
-        { upsert: true },
-      );
-      await setActiveUserSession(userId, sessionId);
+    if (payload.success) {
+      await finalizeInstagramLoginForSession(userId, sessionId, username);
       logInstaAuth("submit-security-code:completed", { userId, sessionId, username });
     }
 
-    res.json({ ok: true, headless, ...result, activeSessionId: sessionId });
+    res.json({ ok: true, headless, ...payload, activeSessionId: sessionId });
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
     logInstaAuth("submit-security-code:error", { error: message });
@@ -1482,42 +1497,26 @@ app.post("/insta/open-login", async (req, res) => {
     if (hasUser && hasPass) {
       const userId = req.authUser?.id;
       const result = await client.login(username, password);
-      const challengeInfo = resolveChallengeFromLoginResult(result as any);
-      const challengeRequired = challengeInfo.challengeRequired;
-      if (challengeRequired) {
+      const payload = enrichLoginChallengeResponse(client, runtime.sessionId, result, req);
+      if (payload.challengeRequired) {
         if (userId) {
           await markSessionRequiresRelogin(userId, runtime.sessionId, "challenge_required_on_open_login");
         }
         res.json({
           ok: true,
           headless,
-          ...result,
-          challengeRequired: true,
-          challengeType: challengeInfo.challengeType,
+          ...payload,
         });
         return;
       }
-      if (!result.success) {
-        res.status(409).json({ ok: false, error: "Instagram não confirmou o login.", ...result });
+      if (!payload.success) {
+        res.status(409).json({ ok: false, error: "Instagram não confirmou o login.", ...payload });
         return;
       }
       if (userId) {
-        const profile = await fetchInstagramPublicProfile(username.toLowerCase());
-        await InstaSessionProfileModel.updateOne(
-          { userId, sessionId: runtime.sessionId },
-          {
-            $set: {
-              instagramUsername: username.toLowerCase(),
-              instagramFullName: profile.fullName,
-              instagramProfilePicUrl: profile.profilePicUrl,
-              lastLoginAt: new Date(),
-              requiresRelogin: false,
-            },
-          },
-          { upsert: true },
-        );
+        await finalizeInstagramLoginForSession(userId, runtime.sessionId, username);
       }
-      res.json({ ok: true, headless, ...result });
+      res.json({ ok: true, headless, ...payload });
       return;
     }
     const url = await client.openLoginPage();

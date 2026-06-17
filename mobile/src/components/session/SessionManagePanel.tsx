@@ -1,13 +1,22 @@
-import { useEffect, useState } from "react"
+import { useCallback, useEffect, useState } from "react"
 import { StyleSheet, Text, View } from "react-native"
+import { ChallengeAssistModal } from "@/src/components/session/ChallengeAssistModal"
 import { Avatar } from "@/src/components/ui/Avatar"
 import { Button } from "@/src/components/ui/Button"
 import { Card } from "@/src/components/ui/Card"
 import { Input } from "@/src/components/ui/Input"
 import { StatusBadge } from "@/src/components/ui/StatusBadge"
 import { useInstaConnect } from "@/src/features/insta/use-insta-connect"
-import type { InstaSessionItem } from "@/src/features/insta/insta-connect-types"
+import {
+  instaChallengeDefaultMessage,
+  instaChallengeFormTitle,
+  isManualInteractionChallenge,
+  type InstaLinkResult,
+  type InstaLoginChallengeType,
+  type InstaSessionItem,
+} from "@/src/features/insta/insta-connect-types"
 import { sessionStatusLabel, sessionStatusVariant } from "@/src/features/insta/session-status"
+import { readAuthToken } from "@/src/lib/storage"
 import { colors } from "@/src/theme/colors"
 import { spacing } from "@/src/theme/spacing"
 
@@ -22,6 +31,7 @@ export function SessionManagePanel({ session }: SessionManagePanelProps) {
     stopSessionRuntime,
     connectInstagramToSession,
     submitSecurityCodeForSession,
+    waitForChallengeResolvedForSession,
     refreshSessions,
   } = useInstaConnect()
 
@@ -38,6 +48,9 @@ export function SessionManagePanel({ session }: SessionManagePanelProps) {
   const [isSubmittingRuntime, setIsSubmittingRuntime] = useState(false)
   const [showTwoFactor, setShowTwoFactor] = useState(false)
   const [pendingUsername, setPendingUsername] = useState("")
+  const [pendingChallengeType, setPendingChallengeType] = useState<InstaLoginChallengeType | undefined>(undefined)
+  const [pendingChallengeAssistUrl, setPendingChallengeAssistUrl] = useState<string | null>(null)
+  const [showChallengeEmbed, setShowChallengeEmbed] = useState(false)
 
   const needsInstagramLogin = !isConnected || Boolean(session.requiresRelogin)
   const showConnectForm = needsInstagramLogin || showTwoFactor
@@ -49,6 +62,45 @@ export function SessionManagePanel({ session }: SessionManagePanelProps) {
     }
   }, [session.instagramUsername])
 
+  useEffect(() => {
+    if (!showTwoFactor || !isManualInteractionChallenge(pendingChallengeType) || !pendingChallengeAssistUrl) {
+      return
+    }
+    void readAuthToken().then((token) => {
+      if (token) setShowChallengeEmbed(true)
+    })
+  }, [showTwoFactor, pendingChallengeType, pendingChallengeAssistUrl])
+
+  const applyChallengeWaitResult = useCallback(
+    async (result: InstaLinkResult): Promise<boolean> => {
+      if (result.success) {
+        setPassword("")
+        setSecurityCode("")
+        setShowTwoFactor(false)
+        setShowChallengeEmbed(false)
+        setPendingChallengeType(undefined)
+        setPendingChallengeAssistUrl(null)
+        setConnectNotice("Instagram conectado com sucesso!")
+        await refreshSessions()
+        return true
+      }
+      if ("challengeRequired" in result && result.challengeRequired) {
+        setPendingChallengeType(result.challengeType)
+        setPendingChallengeAssistUrl(result.challengeAssistUrl ?? null)
+        setConnectError(result.message ?? instaChallengeDefaultMessage(result.challengeType))
+        if (isManualInteractionChallenge(result.challengeType)) {
+          setShowChallengeEmbed(true)
+        }
+        return false
+      }
+      if ("error" in result) {
+        setConnectError(result.error)
+      }
+      return false
+    },
+    [refreshSessions],
+  )
+
   async function handleConnect() {
     setConnectError(null)
     setConnectNotice(null)
@@ -58,12 +110,15 @@ export function SessionManagePanel({ session }: SessionManagePanelProps) {
       setPassword("")
       setSecurityCode("")
       setShowTwoFactor(false)
+      setPendingChallengeType(undefined)
       setConnectNotice("Instagram conectado com sucesso!")
       await refreshSessions()
     } else if ("challengeRequired" in result && result.challengeRequired) {
       setShowTwoFactor(true)
       setPendingUsername(result.username)
-      setConnectError(result.message ?? "Digite o código de segurança recebido.")
+      setPendingChallengeType(result.challengeType)
+      setPendingChallengeAssistUrl(result.challengeAssistUrl ?? null)
+      setConnectError(result.message ?? instaChallengeDefaultMessage(result.challengeType))
     } else if ("error" in result) {
       setConnectError(result.error)
     }
@@ -79,13 +134,47 @@ export function SessionManagePanel({ session }: SessionManagePanelProps) {
       setPassword("")
       setSecurityCode("")
       setShowTwoFactor(false)
+      setPendingChallengeType(undefined)
       setConnectNotice("Código confirmado. Instagram conectado!")
       await refreshSessions()
     } else if ("challengeRequired" in result && result.challengeRequired) {
-      setConnectError(result.message ?? "Código inválido ou expirado. Tente novamente.")
+      setPendingChallengeType(result.challengeType)
+      setPendingChallengeAssistUrl(result.challengeAssistUrl ?? null)
+      setConnectError(result.message ?? instaChallengeDefaultMessage(result.challengeType))
     } else if ("error" in result) {
       setConnectError(result.error)
     }
+    setIsSubmittingConnect(false)
+  }
+
+  function handleOpenChallengeAssist() {
+    if (!pendingChallengeAssistUrl) {
+      setConnectError("URL de verificação remota indisponível. Tente fazer login novamente.")
+      return
+    }
+    void readAuthToken().then((token) => {
+      if (!token) {
+        setConnectError("Sessão do app expirada. Faça login novamente.")
+        return
+      }
+      setShowChallengeEmbed(true)
+    })
+  }
+
+  async function handleChallengeEmbedSuccess() {
+    setShowChallengeEmbed(false)
+    setIsSubmittingConnect(true)
+    const result = await waitForChallengeResolvedForSession(session.id, pendingUsername, 15_000)
+    await applyChallengeWaitResult(result)
+    setIsSubmittingConnect(false)
+  }
+
+  async function handleWaitForChallenge() {
+    setConnectError(null)
+    setConnectNotice(null)
+    setIsSubmittingConnect(true)
+    const result = await waitForChallengeResolvedForSession(session.id, pendingUsername, 120_000)
+    await applyChallengeWaitResult(result)
     setIsSubmittingConnect(false)
   }
 
@@ -154,35 +243,73 @@ export function SessionManagePanel({ session }: SessionManagePanelProps) {
             ) : null}
 
             {showTwoFactor ? (
-              <>
-                <Text style={styles.connectTitle}>Código de segurança</Text>
-                <Text style={styles.hint}>
-                  Código enviado para @{pendingUsername}. Digite abaixo para concluir.
-                </Text>
-                <Input
-                  label="Código"
-                  value={securityCode}
-                  onChangeText={setSecurityCode}
-                  keyboardType="number-pad"
-                  editable={!isSubmittingConnect}
-                />
-                <Button
-                  title="Confirmar código"
-                  onPress={handleSubmitCode}
-                  loading={isSubmittingConnect}
-                />
-                <Button
-                  title="Voltar"
-                  variant="ghost"
-                  onPress={() => {
-                    setShowTwoFactor(false)
-                    setSecurityCode("")
-                    setConnectError(null)
-                  }}
-                />
-              </>
+              isManualInteractionChallenge(pendingChallengeType) ? (
+                <View style={styles.challengeBlock}>
+                  <Text style={styles.connectTitle}>{instaChallengeFormTitle(pendingChallengeType)}</Text>
+                  <Text style={styles.hint}>
+                    {connectError ??
+                      "Complete o reCAPTCHA na tela aberta. Se não abrir, toque em Reabrir verificação."}
+                  </Text>
+                  <Button
+                    title="Reabrir verificação"
+                    onPress={handleOpenChallengeAssist}
+                    loading={isSubmittingConnect}
+                    disabled={!pendingChallengeAssistUrl}
+                  />
+                  <Button
+                    title="Verificar status"
+                    variant="secondary"
+                    onPress={handleWaitForChallenge}
+                    loading={isSubmittingConnect}
+                  />
+                  <Button
+                    title="Voltar"
+                    variant="ghost"
+                    onPress={() => {
+                      setShowTwoFactor(false)
+                      setPendingChallengeType(undefined)
+                      setPendingChallengeAssistUrl(null)
+                      setSecurityCode("")
+                      setConnectError(null)
+                    }}
+                  />
+                </View>
+              ) : (
+                <View style={styles.challengeBlock}>
+                  <Text style={styles.connectTitle}>{instaChallengeFormTitle(pendingChallengeType)}</Text>
+                  <Text style={styles.hint}>
+                    {pendingChallengeType === "email_code"
+                      ? `Verifique o e-mail de @${pendingUsername} e digite o código enviado pelo Instagram.`
+                      : `Código enviado para @${pendingUsername}. Digite abaixo para concluir.`}
+                  </Text>
+                  <Input
+                    label={pendingChallengeType === "email_code" ? "Código do e-mail" : "Código"}
+                    value={securityCode}
+                    onChangeText={setSecurityCode}
+                    keyboardType="number-pad"
+                    editable={!isSubmittingConnect}
+                  />
+                  <Button
+                    title="Confirmar código"
+                    onPress={handleSubmitCode}
+                    loading={isSubmittingConnect}
+                  />
+                  <Button
+                    title="Voltar"
+                    variant="ghost"
+                    onPress={() => {
+                      setShowTwoFactor(false)
+                      setPendingChallengeType(undefined)
+                      setPendingChallengeAssistUrl(null)
+                      setSecurityCode("")
+                      setConnectError(null)
+                    }}
+                  />
+                  {connectError ? <Text style={styles.error}>{connectError}</Text> : null}
+                </View>
+              )
             ) : (
-              <>
+              <View style={styles.challengeBlock}>
                 <Input
                   label="Usuário Instagram"
                   placeholder="seu_usuario"
@@ -203,11 +330,11 @@ export function SessionManagePanel({ session }: SessionManagePanelProps) {
                   onPress={handleConnect}
                   loading={isSubmittingConnect || isManagingSessions}
                 />
-              </>
+                {connectError ? <Text style={styles.error}>{connectError}</Text> : null}
+              </View>
             )}
 
             {connectNotice ? <Text style={styles.notice}>{connectNotice}</Text> : null}
-            {connectError ? <Text style={styles.error}>{connectError}</Text> : null}
           </View>
         ) : null}
       </Card>
@@ -242,6 +369,15 @@ export function SessionManagePanel({ session }: SessionManagePanelProps) {
           {runtimeError ? <Text style={styles.error}>{runtimeError}</Text> : null}
         </Card>
       ) : null}
+
+      <ChallengeAssistModal
+        visible={showChallengeEmbed}
+        challengeAssistUrl={pendingChallengeAssistUrl}
+        onClose={() => setShowChallengeEmbed(false)}
+        onLoginSuccess={() => {
+          void handleChallengeEmbedSuccess()
+        }}
+      />
     </View>
   )
 }
@@ -289,6 +425,9 @@ const styles = StyleSheet.create({
     paddingTop: spacing.sm,
     borderTopWidth: 1,
     borderTopColor: colors.border,
+  },
+  challengeBlock: {
+    gap: spacing.md,
   },
   connectTitle: {
     fontSize: 15,

@@ -21,7 +21,7 @@
     "build:mobile:production": "npm run build:production -w mobile",
     "build:mobile:development": "npm run build:development -w mobile",
     "submit:mobile": "npm run submit:production -w mobile",
-    "postinstall": "patch-package"
+    "postinstall": "patch-package && node scripts/link-expo-router.js"
   },
   "devDependencies": {
     "concurrently": "^9.2.1",

@@ -7,13 +7,15 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
-    "dev": "tsx watch src/index.ts"
+    "dev": "tsx watch src/index.ts",
+    "install:chrome": "npx puppeteer browsers install chrome",
+    "postinstall": "npx puppeteer browsers install chrome"
   },
   "dependencies": {
     "bcryptjs": "^3.0.3",
     "dotenv": "^17.4.2",
     "express": "^5.1.0",
-    "insta-connect-delsuc": "^0.1.5",
+    "insta-connect-delsuc": "file:../../lib-insta-connect/insta-connect-delsuc-0.1.8.tgz",
     "jsonwebtoken": "^9.0.3",
     "luxon": "^3.7.2",
     "mongoose": "^9.5.0",
